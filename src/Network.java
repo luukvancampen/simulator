@@ -5,6 +5,8 @@ public class Network implements Runnable{
     // transmission range in meters.
     LinkedList<Packet> packets = new LinkedList<>();
 
+    // TODO deal with broadcast of TD messages, they're for everyone (I think).
+
     @Override
     public void run() {
         while (true) {

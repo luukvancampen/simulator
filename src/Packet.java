@@ -1,7 +1,7 @@
 import java.util.HashSet;
 
 public class Packet implements Cloneable{
-    String type;
+    PacketType type;
     double[] originCoordinate;
     String originID;
     String destination;
@@ -10,7 +10,7 @@ public class Packet implements Cloneable{
     // packet to a node twice.
     HashSet<Node> received;
 
-    public Packet(String type, double[] originCoordinate, String originID, String destination, HashSet<Node> received) {
+    public Packet(PacketType type, double[] originCoordinate, String originID, String destination, HashSet<Node> received) {
         this.type = type;
         this.originCoordinate = originCoordinate;
         this.originID = originID;
