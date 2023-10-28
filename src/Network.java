@@ -9,11 +9,8 @@ public class Network implements Runnable{
     public void run() {
         while (true) {
             try {
-                System.out.println("Content of queue: ");
-                for (Packet packet : this.packets) {
-                    System.out.println(packet.type);
-                }
-                Thread.sleep(750);
+                Thread.sleep(250);
+                //TODO handle collisions here. Partially random?
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
