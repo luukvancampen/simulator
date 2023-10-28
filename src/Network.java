@@ -3,7 +3,6 @@ import java.util.Optional;
 
 public class Network implements Runnable{
     // transmission range in meters.
-    double range = 100;
     LinkedList<Packet> packets = new LinkedList<>();
 
     @Override
@@ -14,7 +13,7 @@ public class Network implements Runnable{
                 for (Packet packet : this.packets) {
                     System.out.println(packet.type);
                 }
-                Thread.sleep(10);
+                Thread.sleep(750);
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
@@ -23,23 +22,41 @@ public class Network implements Runnable{
 
     // Nodes can call this method to send a packet to the network. It can't fail, so no need to return anything.
     void send(Packet packet) {
-        this.packets.add(packet);
+        synchronized (this.packets) {
+            this.packets.add(packet);
+        }
     }
 
     // Nodes can call this method to receive all packets destined for them. It either returns an Optional<Packet> or
     // nothing.
     Optional<Packet> receive(Node node) {
-        for (Packet packet : this.packets){
-            // Check whether the destination of a packet matches the id of the requesting node...
-            if (packet.destination.equals(node.id) && !packet.received.contains(node)) {
-                // Packet destined for node, make sure the node is added to the packets received list
-                packet.received.add(node);
-                // Return a deep copy of the object.
-                // TODO think about this, deep copy really necessary? I think so.
-                Packet transmittedPacket = packet.clone();
-                return Optional.of(transmittedPacket);
+        synchronized (this.packets) {
+            for (Packet packet : this.packets){
+                // Check whether the destination of a packet matches the id of the requesting node...
+                if (packet.destination.equals(node.id) && !packet.received.contains(node) && nodeWithinRange(packet, node)) {
+                    // Packet destined for node, make sure the node is added to the packets received list
+
+                    packet.received.add(node);
+                    // Return a deep copy of the object.
+                    // TODO think about this, deep copy really necessary? I think so.
+                    Packet transmittedPacket = packet.clone();
+                    return Optional.of(transmittedPacket);
+                }
             }
+            return Optional.empty();
         }
-        return Optional.empty();
+    }
+
+    // The following method will return true when a node is in range of the origin of a packet.
+    // (Nodes each have their own transmission range)
+    boolean nodeWithinRange(Packet packet, Node node) {
+        double packetX = packet.originCoordinate[0];
+        double packetY = packet.originCoordinate[1];
+
+        double nodeX = node.coordinate[0];
+        double nodeY = node.coordinate[1];
+
+        double distance = Math.sqrt(Math.pow(Math.abs(packetX - nodeX), 2) + Math.pow(Math.abs(packetY - nodeY), 2));
+        return distance <= node.transmissionRange;
     }
 }
