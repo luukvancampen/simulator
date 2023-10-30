@@ -56,18 +56,18 @@ public class Node implements Runnable{
             this.send(dataPacket);
             this.current_state = state.WFACK;
             // TODO start timer
-        } else if (this.current_state == state.WFDS && packet.type == PacketType.DS) {
+        } else if (this.current_state == state.WFDS && packet.type == PacketType.DS && Objects.equals(packet.destination, this.id)) {
             // Step 4
             this.current_state = state.WFData;
             //TODO start timer
-        } else if (this.current_state == state.WFData && packet.type == PacketType.DATA){
+        } else if (this.current_state == state.WFData && packet.type == PacketType.DATA && Objects.equals(packet.destination, this.id)){
             // Step 5
             // TODO start timer
             Packet ackPacket = new Packet(PacketType.ACK, this.coordinate, this.id, packet.originID, new HashSet<>());
             this.acknowledgesPackets.add(ackPacket);
             this.send(ackPacket);
             this.current_state = state.IDLE;
-        } else if (this.current_state == state.WFACK && packet.type == PacketType.ACK) {
+        } else if (this.current_state == state.WFACK && packet.type == PacketType.ACK && Objects.equals(packet.destination, this.id)) {
             // Step 6
             // TODO reset timer
             this.current_state = state.IDLE;
@@ -81,15 +81,15 @@ public class Node implements Runnable{
             this.send(ctsPacket);
             this.current_state = state.WFDS;
             // TODO start timer
-        } else if (this.current_state == state.QUIET && packet.type == PacketType.RTS) {
+        } else if (this.current_state == state.QUIET && packet.type == PacketType.RTS && !Objects.equals(packet.destination, this.id)) {
             // Step 9
             this.current_state = state.WFCntend;
             // TODO start timer
-        } else if (this.current_state == state.QUIET && packet.type == PacketType.CTS) {
+        } else if (this.current_state == state.QUIET && packet.type == PacketType.CTS && !Objects.equals(packet.destination, this.id)) {
             // Step 10
             this.current_state = state.WFCntend;
             // TODO start timer
-        } else if (this.current_state == state.WFCntend && (packet.type == PacketType.CTS || packet.type == PacketType.RTS)) {
+        } else if (this.current_state == state.WFCntend && (packet.type == PacketType.CTS || packet.type == PacketType.RTS && !Objects.equals(packet.destination, this.id))) {
             // Step 11
             // TODO increase timer if necessary.
         } else if (this.current_state == state.WFRTS && packet.type == PacketType.RTS) {
