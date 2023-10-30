@@ -3,4 +3,6 @@ public enum PacketType {
     DS,
     CTS,
     RTS,
+    ACK,
+    RRTS
 }

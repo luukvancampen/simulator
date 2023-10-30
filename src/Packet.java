@@ -1,4 +1,5 @@
 import java.util.HashSet;
+import java.util.UUID;
 
 public class Packet implements Cloneable{
     PacketType type;
@@ -9,6 +10,14 @@ public class Packet implements Cloneable{
     // This is required to make sure that the network does not send a particular
     // packet to a node twice.
     HashSet<Node> received;
+    UUID uuid = UUID.randomUUID();
+
+    @Override
+    public int hashCode() {
+        int result = 17;
+        result = 31 * result + this.uuid.hashCode();
+        return result;
+    }
 
     public Packet(PacketType type, double[] originCoordinate, String originID, String destination, HashSet<Node> received) {
         this.type = type;

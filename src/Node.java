@@ -1,7 +1,4 @@
-import java.util.HashSet;
-import java.util.Optional;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 
 public class Node implements Runnable{
@@ -11,6 +8,7 @@ public class Node implements Runnable{
     double[] coordinate;
     Network network;
     private state current_state;
+    private HashSet<Packet> acknowledgesPackets = new HashSet<>();
 
     public Node(String id, double transmissionRange, double[] coordinate, Network network) {
         this.id = id;
@@ -36,16 +34,17 @@ public class Node implements Runnable{
         }
     }
 
+    // TODO in the following code, add conditions so that it is determinded whether this node is the recipient of a packet or simply an "observer"
     // This method deals with handling a received packet in an appropriate way.
     void receive(Packet packet) {
-        if (this.current_state == state.IDLE && packet.type == PacketType.RTS) {
+        if (this.current_state == state.IDLE && packet.type == PacketType.RTS && Objects.equals(packet.destination, this.id)) {
             // This corresponds to step 2 of the paper
             // if idle and receive RTS, send Clear to send
             Packet ctsPacket = new Packet(PacketType.CTS, this.coordinate, this.id, packet.originID, new HashSet<>());
             this.network.send(ctsPacket);
             // Go to Wait for Data Send state
             this.current_state = state.WFDS;
-        } else if (this.current_state == state.WFCTS && packet.type == PacketType.CTS) {
+        } else if (this.current_state == state.WFCTS && packet.type == PacketType.CTS && Objects.equals(packet.destination, this.id)) {
             // This corresponds to step 3
             // When in WFCTS state and receive CTS...
             // TODO cancel the waitForDataSendTimer. Maybe implement this by simply letting the timer run
@@ -62,7 +61,47 @@ public class Node implements Runnable{
             this.current_state = state.WFData;
             //TODO start timer
         } else if (this.current_state == state.WFData && packet.type == PacketType.DATA){
-
+            // Step 5
+            // TODO start timer
+            Packet ackPacket = new Packet(PacketType.ACK, this.coordinate, this.id, packet.originID, new HashSet<>());
+            this.acknowledgesPackets.add(ackPacket);
+            this.send(ackPacket);
+            this.current_state = state.IDLE;
+        } else if (this.current_state == state.WFACK && packet.type == PacketType.ACK) {
+            // Step 6
+            // TODO reset timer
+            this.current_state = state.IDLE;
+        } else if (this.current_state == state.IDLE && packet.type == PacketType.RTS && this.acknowledgesPackets.contains(packet)) {
+            // Step 7
+            Packet ackPacket = new Packet(PacketType.ACK, this.coordinate, this.id, packet.originID, new HashSet<>());
+            this.send(ackPacket);
+        } else if (packet.type == PacketType.ACK && this.current_state == state.CONTEND) {
+            // Step 8
+            Packet ctsPacket = new Packet(PacketType.CTS, this.coordinate, this.id, packet.originID, new HashSet<>());
+            this.send(ctsPacket);
+            this.current_state = state.WFDS;
+            // TODO start timer
+        } else if (this.current_state == state.QUIET && packet.type == PacketType.RTS) {
+            // Step 9
+            this.current_state = state.WFCntend;
+            // TODO start timer
+        } else if (this.current_state == state.QUIET && packet.type == PacketType.CTS) {
+            // Step 10
+            this.current_state = state.WFCntend;
+            // TODO start timer
+        } else if (this.current_state == state.WFCntend && (packet.type == PacketType.CTS || packet.type == PacketType.RTS)) {
+            // Step 11
+            // TODO increase timer if necessary.
+        } else if (this.current_state == state.WFRTS && packet.type == PacketType.RTS) {
+            // Step 12
+            Packet ctsPacket = new Packet(PacketType.CTS, this.coordinate, this.id, packet.originID, new HashSet<>());
+            this.current_state = state.WFDS;
+            // TODO set timer
+        } else if (this.current_state == state.IDLE && packet.type == PacketType.RRTS) {
+            Packet rtsPacket = new Packet(PacketType.RTS, this.coordinate, this.id, packet.originID, new HashSet<>());
+            this.send(rtsPacket);
+            this.current_state = state.WFCTS;
+            // TODO set timer.
         }
 
     }
