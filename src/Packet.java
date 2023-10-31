@@ -11,6 +11,10 @@ public class Packet implements Cloneable{
     // packet to a node twice.
     HashSet<Node> received;
     UUID uuid = UUID.randomUUID();
+    Integer localBackoff;
+    Integer remoteBackoff;
+    Integer sequenceNumber;
+    String data;
 
     @Override
     public int hashCode() {
@@ -19,12 +23,15 @@ public class Packet implements Cloneable{
         return result;
     }
 
-    public Packet(PacketType type, double[] originCoordinate, String originID, String destination, HashSet<Node> received) {
+    public Packet(PacketType type, double[] originCoordinate, String originID, String destination, HashSet<Node> received, Integer localBackoff, Integer remoteBackoff, Integer sequenceNumber) {
         this.type = type;
         this.originCoordinate = originCoordinate;
         this.originID = originID;
         this.destination = destination;
         this.received = received;
+        this.localBackoff = localBackoff;
+        this.remoteBackoff = remoteBackoff;
+        this.sequenceNumber = sequenceNumber;
     }
 
 
