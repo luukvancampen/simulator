@@ -1,15 +1,19 @@
 import java.util.LinkedList;
+import java.util.Objects;
 import java.util.Optional;
 
 public class Network implements Runnable{
     // transmission range in meters.
-    LinkedList<Packet> packets = new LinkedList<>();
+    final LinkedList<Packet> packets = new LinkedList<>();
+
+    // TODO deal with broadcast of TD messages, they're for everyone (I think).
 
     @Override
     public void run() {
         while (true) {
             try {
-                Thread.sleep(250);
+                Thread.sleep(100);
+//                System.out.println("Network contents: " + this.packets.toString());
                 //TODO handle collisions here. Partially random?
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
@@ -20,6 +24,12 @@ public class Network implements Runnable{
     // Nodes can call this method to send a packet to the network. It can't fail, so no need to return anything.
     void send(Packet packet) {
         synchronized (this.packets) {
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            System.out.println(packet.originID + " ---> " + packet.destination + ": " + packet.type.toString());
             this.packets.add(packet);
         }
     }
@@ -29,14 +39,15 @@ public class Network implements Runnable{
     Optional<Packet> receive(Node node) {
         synchronized (this.packets) {
             for (Packet packet : this.packets){
-                // Check whether the destination of a packet matches the id of the requesting node...
-                if (packet.destination.equals(node.id) && !packet.received.contains(node) && nodeWithinRange(packet, node)) {
+                // let a node receive a packet whenever it is in range.
+                if (!packet.received.contains(node) && nodeWithinRange(packet, node) && !Objects.equals(node.id, packet.originID)) {
                     // Packet destined for node, make sure the node is added to the packets received list
 
                     packet.received.add(node);
                     // Return a deep copy of the object.
                     // TODO think about this, deep copy really necessary? I think so.
                     Packet transmittedPacket = packet.clone();
+//                    System.out.println(node.id + " receives " + packet.type.toString() + " from " + packet.originID);
                     return Optional.of(transmittedPacket);
                 }
             }
