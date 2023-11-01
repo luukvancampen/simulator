@@ -25,7 +25,7 @@ public class Network implements Runnable{
     void send(Packet packet) {
         synchronized (this.packets) {
             try {
-                Thread.sleep(200);
+                Thread.sleep(10);
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
@@ -47,7 +47,7 @@ public class Network implements Runnable{
                     // Return a deep copy of the object.
                     // TODO think about this, deep copy really necessary? I think so.
                     Packet transmittedPacket = packet.clone();
-                    System.out.println(node.id + " receives " + packet.type.toString() + " from " + packet.originID);
+//                    System.out.println(node.id + " receives " + packet.type.toString() + " from " + packet.originID);
                     return Optional.of(transmittedPacket);
                 }
             }

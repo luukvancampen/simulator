@@ -23,6 +23,18 @@ public class Packet implements Cloneable{
         return result;
     }
 
+    public Packet(PacketType type, double[] originCoordinate, String originID, String destination, HashSet<Node> received, Integer localBackoff, Integer remoteBackoff, Integer sequenceNumber, String data) {
+        this.type = type;
+        this.originCoordinate = originCoordinate;
+        this.originID = originID;
+        this.destination = destination;
+        this.received = received;
+        this.localBackoff = localBackoff;
+        this.remoteBackoff = remoteBackoff;
+        this.sequenceNumber = sequenceNumber;
+        this.data = data;
+    }
+
     public Packet(PacketType type, double[] originCoordinate, String originID, String destination, HashSet<Node> received, Integer localBackoff, Integer remoteBackoff, Integer sequenceNumber) {
         this.type = type;
         this.originCoordinate = originCoordinate;

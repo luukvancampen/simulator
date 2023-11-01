@@ -1,10 +1,12 @@
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 
-public class Node implements Runnable{
+public class Node implements Runnable {
     // this boolean keeps track of whether the transition to state.CONTEND was done based on sender initiated
     // or receiver initiated (RRTS)
+    // The army papers models this using two different CONTEND states.
     boolean senderInitiated = false;
+    boolean receiverInitiated = false;
     String communicatingWith;
     TimerTask task;
 
@@ -17,6 +19,7 @@ public class Node implements Runnable{
     double transmissionRange;
     double[] coordinate;
     Network network;
+    String dataToSend = "";
     private state current_state = state.IDLE;
     private HashSet<Packet> acknowledgesPackets = new HashSet<>();
 
@@ -27,38 +30,62 @@ public class Node implements Runnable{
         this.network = network;
     }
 
+    public state getCurrent_state() {
+        return this.current_state;
+    }
+
     @Override
     public void run() {
         if (Objects.equals(this.id, "A")) {
-            Packet rtsPacket = new Packet(PacketType.RTS, this.coordinate, this.id, "B", new HashSet<>(), this.local_backoff.getOrDefault("B", 0), this.remote_backoff.getOrDefault("B", 0), this.exchange_seq_number.getOrDefault("B", 0));
-            this.senderInitiated = true;
-            this.communicatingWith = "B";
-            this.send(rtsPacket, this);
+//            Packet rtsPacket = new Packet(PacketType.RTS, this.coordinate, this.id, "B", new HashSet<>(), this.local_backoff.getOrDefault("B", 0), this.remote_backoff.getOrDefault("B", 0), this.exchange_seq_number.getOrDefault("B", 0));
+//            this.senderInitiated = true;
+//            this.communicatingWith = "B";
+//            this.macawSend(rtsPacket, this);
         }
-        while(true) {
+        while (true) {
             try {
-                Thread.sleep(100);
-                Optional<Packet> packet = network.receive(this);
-                if (packet.isPresent()) {
-                    this.receive(packet.get());
+                Thread.sleep(5);
+                Optional<Packet> maybePacket = this.receive();
+                if (maybePacket.isPresent()) {
+                    System.out.println("PACKET RECEIVED: " + maybePacket.get().data);
                 }
-                if (Objects.equals(this.id, "C")) {
-                    System.out.println("C STATE: " + this.current_state.toString());
-                }
+                this.senderInitiated = false;
+                this.receiverInitiated = false;
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
         }
     }
 
+    void send(String receiver, String data) {
+        //TODO throw exception when in quiet state.
+        System.out.println("Sending " + data + " to " + receiver);
+        this.senderInitiated = true;
+        this.dataToSend = data;
+        this.communicatingWith = receiver;
+        this.macawSend(new Packet(PacketType.CTS, this.coordinate, this.id, "", new HashSet<>(), this.local_backoff.getOrDefault("", 0), this.remote_backoff.getOrDefault("", 0), this.exchange_seq_number.getOrDefault("", 0)), this);
+    }
+
+    Optional<Packet> receive() {
+        Optional<Packet> packet = network.receive(this);
+        Optional<Packet> macawPacket = Optional.empty();
+        if (packet.isPresent()) {
+            macawPacket = this.macawReceive(packet.get());
+        }
+        return macawPacket;
+    }
+
+    // Something weird is going on. In the specification in the paper it is stated that when a node sends RRTS, it goes to WFDS state. However, upon receiving the RRTS packet,
+    // the receiving node will send back an RTS packet. But, as soon as that RTS arrives, the other node is still in WFDS state.
+
     // TODO in the following code, add conditions so that it is determinded whether this node is the recipient of a packet or simply an "observer"
     // This method deals with handling a received packet in an appropriate way.
-    void receive(Packet packet) {
+    Optional<Packet> macawReceive(Packet packet) {
         if (this.current_state == state.IDLE && packet.type == PacketType.RTS && Objects.equals(packet.destination, this.id)) {
             // This corresponds to step 2 of the paper
             // if idle and receive RTS, send Clear to send
             reassignBackoffs(packet);
-            Packet ctsPacket = new Packet(PacketType.CTS, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.get(packet.originID), this.remote_backoff.get(packet.originID), this.exchange_seq_number.get(packet.originID));
+            Packet ctsPacket = new Packet(PacketType.CTS, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.getOrDefault(packet.originID, 0), this.remote_backoff.getOrDefault(packet.originID, 0), this.exchange_seq_number.getOrDefault(packet.originID, 0));
             this.network.send(ctsPacket);
             // Go to Wait for Data Send state
             this.current_state = state.WFDS;
@@ -68,11 +95,11 @@ public class Node implements Runnable{
             task.cancel();
             reassignBackoffs(packet);
 
-            Packet dsPacket = new Packet(PacketType.DS, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.get(packet.originID), this.remote_backoff.get(packet.originID), this.exchange_seq_number.get(packet.originID));
-            this.send(dsPacket, this);
+            Packet dsPacket = new Packet(PacketType.DS, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.getOrDefault(packet.originID, 0), this.remote_backoff.getOrDefault(packet.originID, 0), this.exchange_seq_number.getOrDefault(packet.originID, 0));
+            this.macawSend(dsPacket, this);
             this.current_state = state.SendData;
-            Packet dataPacket = new Packet(PacketType.DATA, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.get(packet.originID), this.remote_backoff.get(packet.originID), this.exchange_seq_number.get(packet.originID));
-            this.send(dataPacket, this);
+            Packet dataPacket = new Packet(PacketType.DATA, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.getOrDefault(packet.originID, 0), this.remote_backoff.getOrDefault(packet.originID, 0), this.exchange_seq_number.getOrDefault(packet.originID, 0), dataToSend);
+            this.macawSend(dataPacket, this);
             this.current_state = state.WFACK;
             setTimer(this, 200);
         } else if (this.current_state == state.WFDS && packet.type == PacketType.DS && Objects.equals(packet.destination, this.id)) {
@@ -80,14 +107,15 @@ public class Node implements Runnable{
             reassignBackoffs(packet);
             this.current_state = state.WFData;
             setTimer(this, 200);
-        } else if (this.current_state == state.WFData && packet.type == PacketType.DATA && Objects.equals(packet.destination, this.id)){
+        } else if (this.current_state == state.WFData && packet.type == PacketType.DATA && Objects.equals(packet.destination, this.id)) {
             // Step 5
             task.cancel();
             setTimer(this, 200);
-            Packet ackPacket = new Packet(PacketType.ACK, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.get(packet.originID), this.remote_backoff.get(packet.originID), this.exchange_seq_number.get(packet.originID));
+            Packet ackPacket = new Packet(PacketType.ACK, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.getOrDefault(packet.originID, 0), this.remote_backoff.getOrDefault(packet.originID, 0), this.exchange_seq_number.getOrDefault(packet.originID, 0));
             this.acknowledgesPackets.add(ackPacket);
-            this.send(ackPacket, this);
+            this.macawSend(ackPacket, this);
             this.current_state = state.IDLE;
+            return Optional.of(packet);
         } else if (this.current_state == state.WFACK && packet.type == PacketType.ACK && Objects.equals(packet.destination, this.id)) {
             // Step 6
             reassignBackoffs(packet);
@@ -95,17 +123,21 @@ public class Node implements Runnable{
             this.current_state = state.IDLE;
         } else if (this.current_state == state.IDLE && packet.type == PacketType.RTS && this.acknowledgesPackets.contains(packet)) {
             // Step 7
-            Packet ackPacket = new Packet(PacketType.ACK, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.get(packet.originID), this.remote_backoff.get(packet.originID), this.exchange_seq_number.get(packet.originID));
-            this.send(ackPacket, this);
+            Packet ackPacket = new Packet(PacketType.ACK, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.getOrDefault(packet.originID, 0), this.remote_backoff.getOrDefault(packet.originID, 0), this.exchange_seq_number.getOrDefault(packet.originID, 0));
+            this.macawSend(ackPacket, this);
         } else if (packet.type == PacketType.ACK && this.current_state == state.CONTEND) {
             // Step 8
-            Packet ctsPacket = new Packet(PacketType.CTS, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.get(packet.originID), this.remote_backoff.get(packet.originID), this.exchange_seq_number.get(packet.originID));
-            this.send(ctsPacket, this);
+            Packet ctsPacket = new Packet(PacketType.CTS, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.getOrDefault(packet.originID, 0), this.remote_backoff.getOrDefault(packet.originID, 0), this.exchange_seq_number.getOrDefault(packet.originID, 0));
+            this.macawSend(ctsPacket, this);
             this.current_state = state.WFDS;
             setTimer(this, 200);
             //TODO This seems wrong!
         } else if (this.current_state == state.QUIET && packet.type == PacketType.RTS && Objects.equals(packet.destination, this.id)) {
             // Step 9
+            // This is transmission initiated by someone else.
+            this.communicatingWith = packet.originID;
+            this.receiverInitiated = true;
+            this.senderInitiated = false;
             this.current_state = state.WFCntend;
             setTimer(this, 200);
         } else if (this.current_state == state.QUIET && packet.type == PacketType.CTS && Objects.equals(packet.destination, this.id)) {
@@ -126,20 +158,20 @@ public class Node implements Runnable{
             }
         } else if (this.current_state == state.WFRTS && packet.type == PacketType.RTS) {
             // Step 12
-            Packet ctsPacket = new Packet(PacketType.CTS, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.get(packet.originID), this.remote_backoff.get(packet.originID), this.exchange_seq_number.get(packet.originID));
+            Packet ctsPacket = new Packet(PacketType.CTS, this.coordinate, this.id, packet.originID, new HashSet<>(), this.local_backoff.getOrDefault(packet.originID, 0), this.remote_backoff.getOrDefault(packet.originID, 0), this.exchange_seq_number.getOrDefault(packet.originID, 0));
             this.current_state = state.WFDS;
             setTimer(this, 200);
         } else if (this.current_state == state.IDLE && packet.type == PacketType.RRTS && Objects.equals(packet.destination, this.id)) {
             // Step 13
             reassignBackoffs(packet);
-            Packet rtsPacket = new Packet(PacketType.RTS, this.coordinate, this.id, packet.originID, new HashSet<>(), this.my_backoff, this.remote_backoff.get(packet.originID), this.exchange_seq_number.get(packet.originID));
-            this.send(rtsPacket, this);
-            this.current_state = state.WFCTS;
-            setTimer(this, 200);
+            Packet rtsPacket = new Packet(PacketType.RTS, this.coordinate, this.id, packet.originID, new HashSet<>(), this.my_backoff, this.remote_backoff.getOrDefault(packet.originID, 0), this.exchange_seq_number.getOrDefault(packet.originID, 0));
+            this.macawSend(rtsPacket, this);
+//            this.current_state = state.WFCTS;
+//            setTimer(this, 200);
         } else if (packet.type == PacketType.RTS && !Objects.equals(packet.destination, this.id)) {
             // Defer rule 1
             this.current_state = state.QUIET;
-            setTimer(this, 5000);
+            setTimer(this, 500);
             // TODO set a timer sufficient for A to hear B's CTS
         } else if (packet.type == PacketType.DS && !Objects.equals(packet.destination, this.id)) {
             // Defer rule 2
@@ -147,7 +179,7 @@ public class Node implements Runnable{
             this.remote_backoff.put(packet.originID, packet.localBackoff);
             this.remote_backoff.put(packet.destination, packet.remoteBackoff);
             this.my_backoff = packet.localBackoff;
-            setTimer(this, 5000);
+            setTimer(this, 500);
             // TODO set a timer sufficient for A to transmit data and hear B's ack
         } else if (packet.type == PacketType.CTS && !Objects.equals(packet.destination, this.id)) {
             // Defer rule 3
@@ -155,7 +187,7 @@ public class Node implements Runnable{
             this.remote_backoff.put(packet.destination, packet.remoteBackoff);
             this.current_state = state.QUIET;
             this.my_backoff = packet.localBackoff;
-            setTimer(this, 5000);
+            setTimer(this, 500);
             // TODO set a timer suffecient for B to hear A's data.
         } else if (packet.type == PacketType.RRTS && !Objects.equals(packet.destination, this.id)) {
             // Defer rule 4
@@ -163,10 +195,10 @@ public class Node implements Runnable{
             this.remote_backoff.put(packet.destination, packet.remoteBackoff);
             this.current_state = state.QUIET;
             this.my_backoff = packet.localBackoff;
-            setTimer(this, 5000);
+            setTimer(this, 500);
             // TODO set a timer sufficient for an RTS-CTS exchange.
         }
-
+        return Optional.empty();
     }
 
     void reassignBackoffs(Packet packet) {
@@ -185,11 +217,11 @@ public class Node implements Runnable{
 
     // When a node wants to send something, it should call this method instead of directly calling the Network
     // send method. This has to do with the MACAW implementation.
-    void send(Packet packet, Node node) {
+    void macawSend(Packet packet, Node node) {
         // Step 1 from paper
         if (this.current_state == state.IDLE) {
             this.current_state = state.CONTEND;
-            setTimer(node, 200);
+            setTimer(node, 50);
         } else {
             network.send(packet);
         }
@@ -202,40 +234,27 @@ public class Node implements Runnable{
         task = new TimerTask() {
             @Override
             public void run() {
-                System.out.println("Timer expires in " + node.id);
                 if (node.current_state == state.WFCntend) {
-                    if (node.id == "C") {
-                        System.out.println("C IS HERE 1 ============================");
-                    }
                     // first timeout rule
                     node.setTimer(node, 200);
                     node.current_state = state.CONTEND;
                 } else if (node.current_state == state.CONTEND) {
-                    if (node.id == "C") {
-                        System.out.println("C IS HERE 2 ============================");
-                    }
                     // second timeout rule
                     // TODO this part is why C does not go back to IDLE.
                     if (node.senderInitiated) {
-                        if (node.id == "C") {
-                            System.out.println("C IS HERE 3 ============================");
-                        }
                         Packet rtsPacket = new Packet(PacketType.RTS, node.coordinate, node.id, node.communicatingWith, new HashSet<>(), node.local_backoff.getOrDefault(node.communicatingWith, 0), node.remote_backoff.getOrDefault(node.communicatingWith, 0), node.exchange_seq_number.getOrDefault(node.communicatingWith, 0));
-                        node.send(rtsPacket, node);
+                        node.macawSend(rtsPacket, node);
                         node.current_state = state.WFCTS;
                         node.setTimer(node, 200);
-                    } else {
-                        if (node.id == "C") {
-                            //TODO the boolean senderInitiated does not work properly. It should be possible to account for C simply being an onlooker.
-                            System.out.println("C IS HERE 4 ============================");
-                        }
-                       Exception e = new Exception("RRTS later");
-                       e.printStackTrace();
+                    } else if (node.receiverInitiated) {
+                        Packet rrtsPacket = new Packet(PacketType.RRTS, node.coordinate, node.id, node.communicatingWith, new HashSet<>(), node.local_backoff.getOrDefault(node.communicatingWith, 0), node.remote_backoff.getOrDefault(node.communicatingWith, 0), node.exchange_seq_number.getOrDefault(node.communicatingWith, 0));
+                        network.send(rrtsPacket);
+                        // NOTE: the two papers do not correspond here. According to the army paper, the state should be IDLE.
+                        // According to the other paper, the state should be WFDS. Idle makes more sense.
+                        node.current_state = state.IDLE;
+                        setTimer(node, 200);
                     }
                 } else {
-                    if (node.id == "C") {
-                        System.out.println("C IS HERE 5 ============================");
-                    }
                     node.current_state = state.IDLE;
                 }
             }
