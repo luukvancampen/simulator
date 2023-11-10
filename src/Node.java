@@ -1,13 +1,9 @@
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.PriorityQueue;
-import java.util.Queue;
 import java.util.Set;
 
 public class Node implements Runnable {
@@ -124,14 +120,12 @@ public class Node implements Runnable {
 
             for (OptionType type : packet.optionTypes) {
                 if (type == OptionType.RouteRequest) {
-
                     if (!packet.route.contains(id)) {
-                        packet.route.add(id);
+                        List<String> tempRoute = new ArrayList<>(packet.route);
+                        tempRoute.add(id);
 
                         // Add current route to cache.
-                        updateCache(packet.route);
-
-                        packet.route.remove(packet.route.size() - 1);
+                        updateCache(tempRoute);
                     }
 
                     if (packet.target == id) {
@@ -142,15 +136,14 @@ public class Node implements Runnable {
                         routeReplyPacket.macDestination = packet.route.get(packet.route.size() - 1);
                         routeReplyPacket.ipDestination = packet.route.get(0);
                         routeReplyPacket.ipSource = id;
-                        routeReplyPacket.route = packet.route;
+                        routeReplyPacket.route = new ArrayList<>(packet.route);
                         routeReplyPacket.received = new HashSet<>();
                         routeReplyPacket.sourceCoordinate = coordinate;
 
-                        packet.route.add(id);
+                        routeReplyPacket.route.add(id);
 
                         sendPacket(routeReplyPacket);
                     } else {
-
                         // Forward the RouteRequest if our address is not yet in the current route.
                         if (!packet.route.contains(id)) {
                             Packet routeRequestPacket = new Packet();
@@ -160,7 +153,7 @@ public class Node implements Runnable {
                             routeRequestPacket.ipDestination = "*";
                             routeRequestPacket.optionTypes = List.of(OptionType.RouteRequest);
                             routeRequestPacket.target = packet.target;
-                            routeRequestPacket.route = packet.route;
+                            routeRequestPacket.route = new ArrayList<>(packet.route);
                             routeRequestPacket.received = new HashSet<>();
                             routeRequestPacket.sourceCoordinate = coordinate;
 
@@ -170,7 +163,7 @@ public class Node implements Runnable {
                         }
                     }
                 } else if (type == OptionType.RouteReply) {
-                    updateCache(packet.route);
+                    updateCache(new ArrayList<>(packet.route));
 
                     if (packet.ipDestination == id) {
                         checkSendbuffer();
@@ -181,7 +174,7 @@ public class Node implements Runnable {
                         newPacket.ipDestination = packet.ipDestination;
                         newPacket.optionTypes = List.of(OptionType.RouteReply);
                         newPacket.received = new HashSet<>();
-                        newPacket.route = packet.route;
+                        newPacket.route = new ArrayList<>(packet.route);
                         newPacket.sourceCoordinate = coordinate;
 
                         sendPacket(newPacket);
