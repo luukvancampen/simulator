@@ -30,7 +30,16 @@ public class Network implements Runnable {
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
-            System.out.println(packet.macSource + " ---> " + packet.macDestination + ": " + packet.optionTypes);
+            System.out.println(packet.macSource + " ---> " + packet.macDestination + ": " + packet.optionTypes + " :: "
+                    + packet.sourceRoute);
+
+            if (packet.piggyBack != null) {
+                System.out.println(
+                        "piggy backed: " + packet.piggyBack.macSource + " ---> " + packet.piggyBack.macDestination
+                                + ": " + packet.piggyBack.optionTypes + " :: "
+                                + packet.piggyBack.sourceRoute);
+            }
+
             this.packets.add(packet);
         }
     }
@@ -41,6 +50,22 @@ public class Network implements Runnable {
     Optional<Packet> receive(Node node) {
         synchronized (this.packets) {
             for (Packet packet : this.packets) {
+                if (packet.piggyBack != null) {
+                    if (!packet.piggyBack.received.contains(node) && nodeWithinRange(packet.piggyBack, node)
+                            && !Objects.equals(node.id, packet.macSource)) {
+                        // Packet destined for node, make sure the node is added to the packets received
+                        // list
+
+                        packet.piggyBack.received.add(node);
+                        // Return a deep copy of the object.
+                        // TODO think about this, deep copy really necessary? I think so.
+                        Packet transmittedPacket = packet.piggyBack.clone();
+                        // System.out.println(node.id + " receives " + packet.type.toString() + " from "
+                        // + packet.originID);
+                        return Optional.of(transmittedPacket);
+                    }
+                }
+
                 // let a node receive a packet whenever it is in range.
                 if (!packet.received.contains(node) && nodeWithinRange(packet, node)
                         && !Objects.equals(node.id, packet.macSource)) {

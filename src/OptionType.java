@@ -3,7 +3,7 @@ public enum OptionType {
     RouteRequest,
     RouteReply,
     RouteError,
-    AcknowledgeRequest,
-    Acknowledge,
+    AcknowledgementRequest,
+    Acknowledgement,
     SourceRoute
 }

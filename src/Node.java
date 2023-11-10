@@ -1,9 +1,11 @@
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Queue;
 import java.util.Set;
 
 public class Node implements Runnable {
@@ -13,10 +15,10 @@ public class Node implements Runnable {
     double range;
     Network network;
 
-    // Routing fields.
+    Map<String, List<String>> routeCache;
     List<Packet> sendBuffer;
-    List<Link> routeCache;
-    int currentSequenceNumber;
+    Map<String, RouteRequestTableEntry> routeRequestTable;
+    int routeRequestIdentificationCounter;
 
     Node(String id, double[] coordinate, double range, Network network) {
         this.id = id;
@@ -24,9 +26,10 @@ public class Node implements Runnable {
         this.range = range;
         this.network = network;
 
+        routeCache = new HashMap<>();
         sendBuffer = new ArrayList<>();
-        routeCache = new ArrayList<>();
-        currentSequenceNumber = 0;
+        routeRequestTable = new HashMap<>();
+        routeRequestIdentificationCounter = 0;
     }
 
     @Override
@@ -46,51 +49,7 @@ public class Node implements Runnable {
         }
     }
 
-    void send(String receiver, String data) {
-        Packet packet = new Packet();
-        packet.macSource = id;
-        packet.ipSource = id;
-        packet.ipDestination = receiver;
-        packet.optionTypes = new ArrayList<>();
-        packet.sourceCoordinate = coordinate;
-        packet.received = new HashSet<>();
-        packet.data = data;
-
-        sendPacket(packet);
-    }
-
-    private void sendPacket(Packet packet) {
-        Optional<List<String>> maybeRoute = findRoute(packet.ipDestination);
-
-        if (maybeRoute.isPresent()) {
-            List<String> route = maybeRoute.get();
-            packet.macDestination = route.get(1);
-
-            network.send(packet);
-        } else {
-            // Do route discovery.
-            sendBuffer.add(packet);
-
-            Packet routeRequestPacket = new Packet();
-            routeRequestPacket.macSource = id;
-            routeRequestPacket.macDestination = "*";
-            routeRequestPacket.ipSource = id;
-            routeRequestPacket.ipDestination = "*";
-            routeRequestPacket.optionTypes = List.of(OptionType.RouteRequest);
-            routeRequestPacket.sourceCoordinate = coordinate;
-            routeRequestPacket.target = packet.ipDestination;
-            routeRequestPacket.sequenceNumber = currentSequenceNumber;
-            routeRequestPacket.received = new HashSet<>();
-            routeRequestPacket.route = new ArrayList<>();
-
-            routeRequestPacket.route.add(id);
-            currentSequenceNumber = (currentSequenceNumber + 1) % Integer.MAX_VALUE;
-
-            network.send(routeRequestPacket);
-        }
-    }
-
-    Optional<Packet> receive() {
+    public Optional<Packet> receive() {
         Optional<Packet> maybePacket = network.receive(this);
 
         if (!maybePacket.isPresent()) {
@@ -99,103 +58,273 @@ public class Node implements Runnable {
 
         Packet packet = maybePacket.get();
 
-        if (packet.macDestination == id || packet.macDestination == "*") {
-            if (packet.optionTypes.isEmpty()) {
-                if (packet.ipDestination == id) {
-                    // Successfully received a packet.
-                    return Optional.of(packet);
-                } else {
-                    Packet newPacket = new Packet();
-                    newPacket.macSource = id;
-                    newPacket.ipSource = packet.ipSource;
-                    newPacket.ipDestination = packet.ipDestination;
-                    newPacket.optionTypes = new ArrayList<>();
-                    newPacket.sourceCoordinate = coordinate;
-                    newPacket.received = new HashSet<>();
-                    newPacket.data = packet.data;
+        if (packet.macDestination != id && packet.macDestination != "*") {
+            return Optional.empty();
+        }
 
-                    sendPacket(newPacket);
+        return receivePacket(maybePacket.get());
+    }
+
+    public void send(String receiver, String data) {
+        Packet packet = new Packet();
+        packet.ipSource = id;
+        packet.ipDestination = receiver;
+        packet.optionTypes = Set.of();
+        packet.data = data;
+
+        originatePacket(packet, false);
+    }
+
+    private void originatePacket(Packet packet, boolean piggyBack) {
+        Optional<List<String>> maybeRoute = findRoute(packet.ipDestination);
+
+        if (maybeRoute.isPresent()) {
+            List<String> route = maybeRoute.get();
+
+            sendWithSourceRoute(packet, route);
+        } else {
+            routeDiscovery(packet, piggyBack);
+        }
+    }
+
+    private void sendWithSourceRoute(Packet packet, List<String> route) {
+        packet.macSource = id;
+        packet.macDestination = route.get(0);
+        packet.sourceCoordinate = coordinate;
+        packet.received = new HashSet<>();
+
+        // Add SourceRoute option if route is multi-hop.
+        if (route.size() > 1) {
+            packet.optionTypes = Set.of(OptionType.SourceRoute);
+            packet.sourceRoute = route;
+            packet.segmentsLeft = route.size() - 1;
+        }
+
+        // TODO 8.3.0
+
+        network.send(packet);
+    }
+
+    private Optional<Packet> receivePacket(Packet packet) {
+        if (packet.optionTypes.contains(OptionType.RouteRequest)) {
+            List<String> route = new ArrayList<>();
+            route.add(packet.ipSource);
+            route.addAll(packet.sourceRoute);
+            route.add(id);
+            updateRoutingCache(route);
+
+            if (packet.targetAddress == id) {
+                sendRouteReply(id, packet.ipSource, packet.sourceRoute, packet.routeRequestIdentification);
+            } else {
+                if (packet.ipSource == id || packet.sourceRoute.contains(id)) {
+                    return Optional.empty();
                 }
-            }
 
-            for (OptionType type : packet.optionTypes) {
-                if (type == OptionType.RouteRequest) {
-                    if (!packet.route.contains(id)) {
-                        List<String> tempRoute = new ArrayList<>(packet.route);
-                        tempRoute.add(id);
+                // TODO search route request table 8.2.2
 
-                        // Add current route to cache.
-                        updateCache(tempRoute);
+                // TODO add entry to route request table 8.2.2
+
+                Optional<List<String>> maybeCachedRoute = findRoute(packet.targetAddress);
+                boolean sentCachedRoute = false;
+
+                if (maybeCachedRoute.isPresent()) {
+                    List<String> cachedRoute = maybeCachedRoute.get();
+
+                    boolean containsDuplicate = false;
+
+                    if (!cachedRoute.contains(packet.ipSource)) {
+                        containsDuplicate = true;
                     }
 
-                    if (packet.target == id) {
-                        // Send a RouteReply if we are the target for the RouteRequest.
-                        Packet routeReplyPacket = new Packet();
-                        routeReplyPacket.optionTypes = List.of(OptionType.RouteReply);
-                        routeReplyPacket.macSource = id;
-                        routeReplyPacket.macDestination = packet.route.get(packet.route.size() - 1);
-                        routeReplyPacket.ipDestination = packet.route.get(0);
-                        routeReplyPacket.ipSource = id;
-                        routeReplyPacket.route = new ArrayList<>(packet.route);
-                        routeReplyPacket.received = new HashSet<>();
-                        routeReplyPacket.sourceCoordinate = coordinate;
-
-                        routeReplyPacket.route.add(id);
-
-                        sendPacket(routeReplyPacket);
-                    } else {
-                        // Forward the RouteRequest if our address is not yet in the current route.
-                        if (!packet.route.contains(id)) {
-                            Packet routeRequestPacket = new Packet();
-                            routeRequestPacket.macSource = id;
-                            routeRequestPacket.macDestination = "*";
-                            routeRequestPacket.ipSource = packet.ipSource;
-                            routeRequestPacket.ipDestination = "*";
-                            routeRequestPacket.optionTypes = List.of(OptionType.RouteRequest);
-                            routeRequestPacket.target = packet.target;
-                            routeRequestPacket.route = new ArrayList<>(packet.route);
-                            routeRequestPacket.received = new HashSet<>();
-                            routeRequestPacket.sourceCoordinate = coordinate;
-
-                            routeRequestPacket.route.add(id);
-
-                            network.send(routeRequestPacket);
+                    for (String node : packet.sourceRoute) {
+                        if (cachedRoute.contains(node)) {
+                            containsDuplicate = true;
+                            break;
                         }
                     }
-                } else if (type == OptionType.RouteReply) {
-                    updateCache(new ArrayList<>(packet.route));
 
-                    if (packet.ipDestination == id) {
-                        checkSendbuffer();
-                    } else {
-                        Packet newPacket = new Packet();
-                        newPacket.macSource = id;
-                        newPacket.ipSource = packet.ipSource;
-                        newPacket.ipDestination = packet.ipDestination;
-                        newPacket.optionTypes = List.of(OptionType.RouteReply);
-                        newPacket.received = new HashSet<>();
-                        newPacket.route = new ArrayList<>(packet.route);
-                        newPacket.sourceCoordinate = coordinate;
+                    if (!containsDuplicate) {
+                        List<String> sourceRoute = new ArrayList<>();
+                        sourceRoute.addAll(packet.sourceRoute);
+                        sourceRoute.add(id);
+                        sourceRoute.addAll(cachedRoute);
+                        sourceRoute.add(packet.targetAddress);
 
-                        sendPacket(newPacket);
+                        // TODO 8.2.5
+
+                        sendRouteReply(id, packet.ipSource, sourceRoute, packet.routeRequestIdentification);
+
+                        sentCachedRoute = true;
+
+                        // TODO might need to propagate RouteRequest if other options present.
                     }
-                } else if (type == OptionType.RouteError) {
+                }
 
-                } else if (type == OptionType.AcknowledgeRequest) {
+                if (!sentCachedRoute) {
+                    boolean alreadyPresent = false;
 
-                } else if (type == OptionType.Acknowledge) {
+                    RouteRequestTableEntry routeRequestTableEntry = routeRequestTable.get(packet.ipSource);
 
-                } else if (type == OptionType.SourceRoute) {
+                    if (routeRequestTableEntry != null) {
+                        for (RouteRequestId id : routeRequestTableEntry.routeRequests) {
+                            if (id.routeRequestIdentification == packet.routeRequestIdentification
+                                    && id.targetAddress == packet.targetAddress) {
+                                alreadyPresent = true;
+                                break;
+                            }
+                        }
+                    }
 
+                    if (!alreadyPresent) {
+                        route = new ArrayList<>();
+                        route.addAll(packet.sourceRoute);
+                        route.add(id);
+
+                        Packet routeRequestPacket = new Packet();
+                        routeRequestPacket.macSource = id;
+                        routeRequestPacket.macDestination = "*";
+                        routeRequestPacket.sourceCoordinate = coordinate;
+                        routeRequestPacket.received = new HashSet<>();
+
+                        routeRequestPacket.ipSource = packet.ipSource;
+                        routeRequestPacket.ipDestination = "255.255.255.255";
+                        routeRequestPacket.optionTypes = Set.of(OptionType.RouteRequest);
+
+                        routeRequestPacket.sourceRoute = route;
+                        routeRequestPacket.routeRequestIdentification = packet.routeRequestIdentification;
+                        routeRequestPacket.targetAddress = packet.targetAddress;
+
+                        network.send(routeRequestPacket);
+                    }
+                }
+            }
+        }
+
+        if (packet.optionTypes.contains(OptionType.RouteReply)) {
+
+            List<String> route = new ArrayList<>();
+            route.add(packet.ipDestination);
+            route.addAll(packet.sourceRoute);
+            route.add(packet.ipSource);
+            updateRoutingCache(route);
+
+            if (packet.ipDestination != id) {
+                sendRouteReply(packet.ipSource, packet.ipDestination, packet.sourceRoute,
+                        packet.routeRequestIdentification);
+            }
+        }
+
+        if (packet.optionTypes.contains(OptionType.RouteError)) {
+            // TODO 8.3.5
+        }
+
+        if (packet.optionTypes.contains(OptionType.AcknowledgementRequest)) {
+            // TODO 8.3.3
+        }
+
+        if (packet.optionTypes.contains(OptionType.Acknowledgement)) {
+            List<String> link = List.of(packet.ipSource, packet.ipDestination);
+            updateRoutingCache(link);
+
+            // TODO 8.3.3
+        }
+
+        if (packet.optionTypes.contains(OptionType.SourceRoute)) {
+            List<String> route = new ArrayList<>();
+
+            if (packet.salvage == 0) {
+                route.add(packet.ipSource);
+            }
+
+            route.addAll(packet.sourceRoute);
+            route.add(packet.ipDestination);
+            updateRoutingCache(route);
+
+            // TODO 8.1.5
+            // TODO automatic route shortening
+
+            if (packet.segmentsLeft == 0) {
+                // packet.optionTypes.remove(OptionType.SourceRoute);
+            } else if (packet.segmentsLeft > packet.sourceRoute.size()) {
+                throw new RuntimeException();
+            } else {
+                packet.segmentsLeft -= 1;
+                int i = packet.sourceRoute.size() - packet.segmentsLeft - 1;
+
+                if (packet.sourceRoute.get(i) != "*" && packet.ipDestination != "255.255.255.255") {
+                    packet.timeToLive -= 1;
+
+                    // TODO 8.3
+
+                    packet.macSource = id;
+                    packet.macDestination = packet.sourceRoute.get(i);
+                    packet.sourceCoordinate = coordinate;
+                    packet.received = new HashSet<>();
+
+                    network.send(packet);
                 }
             }
 
+            if (packet.ipDestination == id) {
+                // packet.optionTypes.remove(OptionType.SourceRoute);
+
+                return Optional.of(packet);
+            }
         }
 
         return Optional.empty();
     }
 
-    private void checkSendbuffer() {
+    private void sendRouteReply(String sourceAddress, String destinationAddress, List<String> sourceRoute,
+            int routeRequestIdentification) {
+
+        Packet routeReplyPacket = new Packet();
+        routeReplyPacket.macSource = id;
+
+        if (sourceRoute.isEmpty()) {
+            routeReplyPacket.macDestination = destinationAddress;
+        } else {
+            routeReplyPacket.macDestination = sourceRoute.get(sourceRoute.size() - 1);
+        }
+
+        routeReplyPacket.sourceCoordinate = coordinate;
+        routeReplyPacket.received = new HashSet<>();
+
+        routeReplyPacket.ipSource = sourceAddress;
+        routeReplyPacket.ipDestination = destinationAddress;
+        routeReplyPacket.optionTypes = Set.of(OptionType.RouteReply);
+
+        routeReplyPacket.sourceRoute = sourceRoute;
+        routeReplyPacket.routeRequestIdentification = routeRequestIdentification;
+
+        // TODO sleep between 0 and BroadcastJitter. 8.2.4
+
+        originatePacket(routeReplyPacket, true);
+    }
+
+    private void updateRoutingCache(List<String> route) {
+        String sourceAddress = route.get(0);
+
+        for (int i = 1; i < route.size(); i++) {
+            String destinationAddress = route.get(i);
+            List<String> neighbours = routeCache.getOrDefault(sourceAddress, new ArrayList<>());
+
+            if (!neighbours.contains(destinationAddress)) {
+                neighbours.add(destinationAddress);
+            }
+
+            routeCache.put(sourceAddress, neighbours);
+
+            sourceAddress = destinationAddress;
+        }
+
+        System.out.println(id + " :: " + route);
+        System.out.println(id + " :: " + routeCache);
+
+        checkSendBuffer();
+    }
+
+    private void checkSendBuffer() {
         for (int i = 0; i < sendBuffer.size(); i++) {
             Packet packet = sendBuffer.get(i);
 
@@ -203,57 +332,79 @@ public class Node implements Runnable {
 
             if (maybeRoute.isPresent()) {
                 List<String> route = maybeRoute.get();
-                packet.macDestination = route.get(1);
-                network.send(packet);
+
+                sendWithSourceRoute(packet, route);
 
                 sendBuffer.remove(i);
             }
         }
     }
 
-    private void updateCache(List<String> route) {
-        String source = route.get(0);
+    private void routeDiscovery(Packet packet, boolean piggyBack) {
+        RouteRequestId routeRequestId = new RouteRequestId();
+        routeRequestId.routeRequestIdentification = packet.routeRequestIdentification;
+        routeRequestId.targetAddress = packet.targetAddress;
 
-        for (int i = 1; i < route.size(); i++) {
-            Link link = new Link();
-            link.source = source;
-            link.destination = route.get(i);
+        RouteRequestTableEntry routeRequestTableEntry = routeRequestTable.getOrDefault(id,
+                new RouteRequestTableEntry());
 
-            boolean matches = false;
+        if (routeRequestTableEntry.routeRequests == null) {
+            routeRequestTableEntry.routeRequests = new ArrayDeque<>();
+        }
 
-            for (Link otherLink : routeCache) {
-                if (otherLink.matches(link)) {
-                    matches = true;
-                    break;
-                }
-            }
+        routeRequestTableEntry.routeRequests.add(routeRequestId);
 
-            if (!matches) {
-                routeCache.add(link);
-            }
+        if (!piggyBack) {
+            sendBuffer.add(packet);
 
-            source = route.get(i);
+            Packet routeRequestPacket = new Packet();
+            routeRequestPacket.macSource = id;
+            routeRequestPacket.macDestination = "*";
+            routeRequestPacket.sourceCoordinate = coordinate;
+            routeRequestPacket.received = new HashSet<>();
+
+            routeRequestPacket.ipSource = id;
+            routeRequestPacket.ipDestination = "255.255.255.255";
+            routeRequestPacket.optionTypes = Set.of(OptionType.RouteRequest);
+
+            routeRequestPacket.sourceRoute = new ArrayList<>();
+            routeRequestPacket.routeRequestIdentification = routeRequestIdentificationCounter;
+            routeRequestPacket.targetAddress = packet.ipDestination;
+
+            routeRequestIdentificationCounter = (routeRequestIdentificationCounter + 1) % Integer.MAX_VALUE;
+
+            network.send(routeRequestPacket);
+
+            // TODO update route request table (8.2.1)
+        } else {
+            Packet routeRequestPacket = new Packet();
+            routeRequestPacket.macSource = id;
+            routeRequestPacket.macDestination = "*";
+            routeRequestPacket.sourceCoordinate = coordinate;
+            routeRequestPacket.received = new HashSet<>();
+
+            routeRequestPacket.ipSource = id;
+            routeRequestPacket.ipDestination = "255.255.255.255";
+            routeRequestPacket.piggyBack = packet;
+            routeRequestPacket.optionTypes = Set.of(OptionType.RouteRequest);
+
+            routeRequestPacket.sourceRoute = new ArrayList<>();
+            routeRequestPacket.routeRequestIdentification = routeRequestIdentificationCounter;
+            routeRequestPacket.targetAddress = packet.ipDestination;
+
+            routeRequestIdentificationCounter = (routeRequestIdentificationCounter + 1) % Integer.MAX_VALUE;
+
+            network.send(routeRequestPacket);
         }
     }
 
-    // Use Dijkstra's algorithm to find the shortest route based on our routeCache.
     private Optional<List<String>> findRoute(String destination) {
-
-        Set<String> nodes = new HashSet<>();
-        nodes.add(id);
-        nodes.add(destination);
-
-        for (Link link : routeCache) {
-            nodes.add(link.source);
-            nodes.add(link.destination);
-        }
-
         Map<String, Integer> hops = new HashMap<>();
         Map<String, String> previous = new HashMap<>();
 
         List<String> queue = new ArrayList<>();
 
-        for (String node : nodes) {
+        for (String node : routeCache.keySet()) {
             if (node == id) {
                 hops.put(node, 0);
             } else {
@@ -282,16 +433,8 @@ public class Node implements Runnable {
 
             queue.remove(index);
 
-            for (Link link : routeCache) {
-                String neighbour = null;
-
-                if (link.source == node) {
-                    neighbour = link.destination;
-                } else if (link.destination == node) {
-                    neighbour = link.source;
-                }
-
-                if (neighbour != null && queue.contains(neighbour)) {
+            for (String neighbour : routeCache.get(node)) {
+                if (queue.contains(neighbour)) {
                     int newHops = hops.get(node) + 1;
 
                     if (newHops < hops.get(neighbour)) {
@@ -308,7 +451,6 @@ public class Node implements Runnable {
 
         String currentNode = destination;
         List<String> route = new ArrayList<>();
-        route.add(currentNode);
 
         while (currentNode != id) {
             String prev = previous.get(currentNode);
@@ -317,22 +459,320 @@ public class Node implements Runnable {
                 return Optional.empty();
             }
 
-            currentNode = prev;
             route.add(0, currentNode);
+            currentNode = prev;
         }
 
         return Optional.of(route);
     }
 
-    private final class Link {
-        String source;
-        String destination;
-
-        public boolean matches(Link link) {
-            return source == link.source && destination == link.destination
-                    || source == link.destination && destination == link.source;
-        }
+    private final class RouteRequestTableEntry {
+        private Queue<RouteRequestId> routeRequests;
     }
+
+    private final class RouteRequestId {
+        private int routeRequestIdentification;
+        private String targetAddress;
+    }
+
+    // Set<String> nodes = new HashSet<>();
+    // nodes.add(id);
+    // nodes.add(destination);
+
+    // for (Link link : routeCache) {
+    // nodes.add(link.source);
+    // nodes.add(link.destination);
+    // }
+
+    // Map<String, Integer> hops = new HashMap<>();
+    // Map<String, String> previous = new HashMap<>();
+
+    // List<String> queue = new ArrayList<>();
+
+    // for (String node : nodes) {
+    // if (node == id) {
+    // hops.put(node, 0);
+    // } else {
+    // hops.put(node, Integer.MAX_VALUE);
+    // }
+
+    // previous.put(node, null);
+    // queue.add(node);
+    // }
+
+    // while (!queue.isEmpty()) {
+    // String node = queue.get(0);
+    // int minHops = hops.get(node);
+    // int index = 0;
+
+    // for (int i = 1; i < queue.size(); i++) {
+    // String queuedNode = queue.get(i);
+    // int h = hops.get(queuedNode);
+
+    // if (h < minHops) {
+    // minHops = h;
+    // node = queuedNode;
+    // index = i;
+    // }
+    // }
+
+    // queue.remove(index);
+
+    // for (Link link : routeCache) {
+    // String neighbour = null;
+
+    // if (link.source == node) {
+    // neighbour = link.destination;
+    // } else if (link.destination == node) {
+    // neighbour = link.source;
+    // }
+
+    // if (neighbour != null && queue.contains(neighbour)) {
+    // int newHops = hops.get(node) + 1;
+
+    // if (newHops < hops.get(neighbour)) {
+    // hops.put(neighbour, newHops);
+    // previous.put(neighbour, node);
+
+    // if (neighbour == destination) {
+    // queue.clear();
+    // }
+    // }
+    // }
+    // }
+    // }
+
+    // String currentNode = destination;
+    // List<String> route = new ArrayList<>();
+    // route.add(currentNode);
+
+    // while (currentNode != id) {
+    // String prev = previous.get(currentNode);
+
+    // if (prev == null) {
+    // return Optional.empty();
+    // }
+
+    // currentNode = prev;
+    // route.add(0, currentNode);
+    // }
+
+    // return Optional.of(route);
+
+    // private final class Link {
+    // String source;
+    // String destination;
+
+    // public boolean matches(Link link) {
+    // return source == link.source && destination == link.destination
+    // || source == link.destination && destination == link.source;
+    // }
+    // }
+
+    // AAAA //
+
+    // void send(String receiver, String data) {
+    // Packet packet = new Packet();
+    // packet.macSource = id;
+    // packet.ipSource = id;
+    // packet.ipDestination = receiver;
+    // packet.optionTypes = new ArrayList<>();
+    // packet.sourceCoordinate = coordinate;
+    // packet.received = new HashSet<>();
+    // packet.data = data;
+
+    // sendPacket(packet);
+    // }
+
+    // private void sendPacket(Packet packet) {
+    // Optional<List<String>> maybeRoute = findRoute(packet.ipDestination);
+
+    // if (maybeRoute.isPresent()) {
+    // List<String> route = maybeRoute.get();
+    // packet.macDestination = route.get(1);
+
+    // network.send(packet);
+    // } else {
+    // // Do route discovery.
+    // sendBuffer.add(packet);
+
+    // Packet routeRequestPacket = new Packet();
+    // routeRequestPacket.macSource = id;
+    // routeRequestPacket.macDestination = "*";
+    // routeRequestPacket.ipSource = id;
+    // routeRequestPacket.ipDestination = "*";
+    // routeRequestPacket.optionTypes = List.of(OptionType.RouteRequest);
+    // routeRequestPacket.sourceCoordinate = coordinate;
+    // routeRequestPacket.target = packet.ipDestination;
+    // routeRequestPacket.sequenceNumber = currentSequenceNumber;
+    // routeRequestPacket.received = new HashSet<>();
+    // routeRequestPacket.route = new ArrayList<>();
+
+    // routeRequestPacket.route.add(id);
+    // currentSequenceNumber = (currentSequenceNumber + 1) % Integer.MAX_VALUE;
+
+    // network.send(routeRequestPacket);
+    // }
+    // }
+
+    // Optional<Packet> receive() {
+    // Optional<Packet> maybePacket = network.receive(this);
+
+    // if (!maybePacket.isPresent()) {
+    // return Optional.empty();
+    // }
+
+    // Packet packet = maybePacket.get();
+
+    // if (packet.macDestination == id || packet.macDestination == "*") {
+    // if (packet.optionTypes.isEmpty()) {
+    // if (packet.ipDestination == id) {
+    // // Successfully received a packet.
+    // return Optional.of(packet);
+    // } else {
+    // Packet newPacket = new Packet();
+    // newPacket.macSource = id;
+    // newPacket.ipSource = packet.ipSource;
+    // newPacket.ipDestination = packet.ipDestination;
+    // newPacket.optionTypes = new ArrayList<>();
+    // newPacket.sourceCoordinate = coordinate;
+    // newPacket.received = new HashSet<>();
+    // newPacket.data = packet.data;
+
+    // sendPacket(newPacket);
+    // }
+    // }
+
+    // for (OptionType type : packet.optionTypes) {
+    // if (type == OptionType.RouteRequest) {
+    // if (!packet.route.contains(id)) {
+    // List<String> tempRoute = new ArrayList<>(packet.route);
+    // tempRoute.add(id);
+
+    // // Add current route to cache.
+    // updateCache(tempRoute);
+    // }
+
+    // if (packet.target == id) {
+    // // Send a RouteReply if we are the target for the RouteRequest.
+    // Packet routeReplyPacket = new Packet();
+    // routeReplyPacket.optionTypes = List.of(OptionType.RouteReply);
+    // routeReplyPacket.macSource = id;
+    // routeReplyPacket.macDestination = packet.route.get(packet.route.size() - 1);
+    // routeReplyPacket.ipDestination = packet.route.get(0);
+    // routeReplyPacket.ipSource = id;
+    // routeReplyPacket.route = new ArrayList<>(packet.route);
+    // routeReplyPacket.received = new HashSet<>();
+    // routeReplyPacket.sourceCoordinate = coordinate;
+
+    // routeReplyPacket.route.add(id);
+
+    // sendPacket(routeReplyPacket);
+    // } else {
+    // // Forward the RouteRequest if our address is not yet in the current route.
+    // if (!packet.route.contains(id)) {
+    // Packet routeRequestPacket = new Packet();
+    // routeRequestPacket.macSource = id;
+    // routeRequestPacket.macDestination = "*";
+    // routeRequestPacket.ipSource = packet.ipSource;
+    // routeRequestPacket.ipDestination = "*";
+    // routeRequestPacket.optionTypes = List.of(OptionType.RouteRequest);
+    // routeRequestPacket.target = packet.target;
+    // routeRequestPacket.route = new ArrayList<>(packet.route);
+    // routeRequestPacket.received = new HashSet<>();
+    // routeRequestPacket.sourceCoordinate = coordinate;
+
+    // routeRequestPacket.route.add(id);
+
+    // network.send(routeRequestPacket);
+    // }
+    // }
+    // } else if (type == OptionType.RouteReply) {
+    // updateCache(new ArrayList<>(packet.route));
+
+    // if (packet.ipDestination == id) {
+    // checkSendbuffer();
+    // } else {
+    // Packet newPacket = new Packet();
+    // newPacket.macSource = id;
+    // newPacket.ipSource = packet.ipSource;
+    // newPacket.ipDestination = packet.ipDestination;
+    // newPacket.optionTypes = List.of(OptionType.RouteReply);
+    // newPacket.received = new HashSet<>();
+    // newPacket.route = new ArrayList<>(packet.route);
+    // newPacket.sourceCoordinate = coordinate;
+
+    // sendPacket(newPacket);
+    // }
+    // } else if (type == OptionType.RouteError) {
+
+    // } else if (type == OptionType.AcknowledgeRequest) {
+
+    // } else if (type == OptionType.Acknowledge) {
+
+    // } else if (type == OptionType.SourceRoute) {
+
+    // }
+    // }
+
+    // }
+
+    // return Optional.empty();
+    // }
+
+    // private void checkSendbuffer() {
+    // for (int i = 0; i < sendBuffer.size(); i++) {
+    // Packet packet = sendBuffer.get(i);
+
+    // Optional<List<String>> maybeRoute = findRoute(packet.ipDestination);
+
+    // if (maybeRoute.isPresent()) {
+    // List<String> route = maybeRoute.get();
+    // packet.macDestination = route.get(1);
+    // network.send(packet);
+
+    // sendBuffer.remove(i);
+    // }
+    // }
+    // }
+
+    // private void updateCache(List<String> route) {
+    // String source = route.get(0);
+
+    // for (int i = 1; i < route.size(); i++) {
+    // Link link = new Link();
+    // link.source = source;
+    // link.destination = route.get(i);
+
+    // boolean matches = false;
+
+    // for (Link otherLink : routeCache) {
+    // if (otherLink.matches(link)) {
+    // matches = true;
+    // break;
+    // }
+    // }
+
+    // if (!matches) {
+    // routeCache.add(link);
+    // }
+
+    // source = route.get(i);
+    // }
+    // }
+
+    // // Use Dijkstra's algorithm to find the shortest route based on our
+    // routeCache.
+
+    // private final class Link {
+    // String source;
+    // String destination;
+
+    // public boolean matches(Link link) {
+    // return source == link.source && destination == link.destination
+    // || source == link.destination && destination == link.source;
+    // }
+    // }
 
     // // this boolean keeps track of whether the transition to state.CONTEND was
     // done based on sender initiated

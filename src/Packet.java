@@ -1,5 +1,6 @@
 import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class Packet implements Cloneable {
     // Network / MAC fields.
@@ -10,13 +11,21 @@ public class Packet implements Cloneable {
     HashSet<Node> received;
 
     // Routing fields.
-    List<OptionType> optionTypes;
+    Set<OptionType> optionTypes;
     int sequenceNumber;
     int timeToLive;
-    String target;
-    List<String> route;
+    List<String> sourceRoute;
     String ipSource;
     String ipDestination;
+    Packet piggyBack;
+
+    // RouteRequest
+    int routeRequestIdentification;
+    String targetAddress;
+
+    // SourceRoute
+    int segmentsLeft;
+    int salvage;
 
     @Override
     public Packet clone() {
