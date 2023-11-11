@@ -24,7 +24,7 @@ public class Node implements Runnable {
     private Map<String, RouteRequestTableEntry> routeRequestTable;
     private int routeRequestIdentificationCounter;
     private List<GratituousReplyTableEntry> gratituousReplyTable;
-    private Map<String, List<Packet>> maintenanceBuffer;
+    private Map<String, List<NetworkLayerPacket>> maintenanceBuffer;
 
     Node(String id, double[] coordinate, double range, Network network) {
         this.id = id;
@@ -46,7 +46,7 @@ public class Node implements Runnable {
             try {
                 Thread.sleep(5);
 
-                Optional<Packet> maybePacket = this.receiveDSR();
+                Optional<NetworkLayerPacket> maybePacket = this.receiveDSR();
 
                 if (maybePacket.isPresent()) {
                     System.out.println();
@@ -65,14 +65,14 @@ public class Node implements Runnable {
      * 
      */
 
-    public Optional<Packet> receiveMACAW() {
-        Optional<Packet> maybePacket = network.receive(this); // TODO replace this with macaw.
+    public Optional<NetworkLayerPacket> receiveMACAW() {
+        Optional<NetworkLayerPacket> maybePacket = network.receive(this); // TODO replace this with macaw.
 
         if (!maybePacket.isPresent()) {
             return Optional.empty();
         }
 
-        Packet packet = maybePacket.get();
+        NetworkLayerPacket packet = maybePacket.get();
 
         if (packet.macDestination != id && packet.macDestination != "ff:ff:ff:ff:ff:ff") {
             return Optional.empty();
@@ -81,7 +81,7 @@ public class Node implements Runnable {
         return Optional.of(packet);
     }
 
-    public void sendMACAW(Packet packet, Consumer<Boolean> callback) {
+    public void sendMACAW(NetworkLayerPacket packet, Consumer<Boolean> callback) {
         network.send(packet); // replace this with macaw.
 
         // TODO route through macaw here.
@@ -92,7 +92,7 @@ public class Node implements Runnable {
     }
 
     // Helper function.
-    public void sendMACAW(Packet packet) {
+    public void sendMACAW(NetworkLayerPacket packet) {
         sendMACAW(packet, success -> {
         });
     }
@@ -105,8 +105,8 @@ public class Node implements Runnable {
 
     // Process a packet using DSR.
     // Returns packets with data in them if any.
-    public Optional<Packet> receiveDSR() {
-        Optional<Packet> maybePacket = receiveMACAW();
+    public Optional<NetworkLayerPacket> receiveDSR() {
+        Optional<NetworkLayerPacket> maybePacket = receiveMACAW();
 
         if (!maybePacket.isPresent()) {
             return Optional.empty();
@@ -117,7 +117,7 @@ public class Node implements Runnable {
 
     // Send data to a receiver using DSR.
     public void sendDSR(String receiver, String data) {
-        Packet packet = new Packet();
+        NetworkLayerPacket packet = new NetworkLayerPacket();
 
         packet.ipSource = id;
         packet.ipDestination = receiver;
@@ -138,7 +138,7 @@ public class Node implements Runnable {
     // that route.
     // Else if we know no route, store the packet in the sendBuffer and perform
     // route discovery.
-    private void originatePacket(Packet packet, boolean piggyBackRouteRequest) {
+    private void originatePacket(NetworkLayerPacket packet, boolean piggyBackRouteRequest) {
         if (packet.ipDestination == "255.255.255.255") {
             sendMACAW(packet);
         } else if (packet.optionTypes.contains(OptionType.SourceRoute)) {
@@ -157,7 +157,7 @@ public class Node implements Runnable {
 
     // Send the packet over the given sourceRoute.
     // Will include a SourceRoute option.
-    private void sendWithSourceRoute(Packet packet, List<String> sourceRoute) {
+    private void sendWithSourceRoute(NetworkLayerPacket packet, List<String> sourceRoute) {
         packet.sourceCoordinate = coordinate;
         packet.received = new HashSet<>();
 
@@ -184,8 +184,8 @@ public class Node implements Runnable {
     // Send a packet with a SourceRoute option to the next hop.
     // This function also performs route error handling if it could not reach the
     // next hop.
-    private void sendWithMaintenance(Packet packet) {
-        List<Packet> packets = maintenanceBuffer.getOrDefault(packet.macDestination, new ArrayList<>());
+    private void sendWithMaintenance(NetworkLayerPacket packet) {
+        List<NetworkLayerPacket> packets = maintenanceBuffer.getOrDefault(packet.macDestination, new ArrayList<>());
         packets.add(packet);
         maintenanceBuffer.put(packet.macDestination, packets);
 
@@ -193,12 +193,12 @@ public class Node implements Runnable {
             if (!success) {
                 handleLinkError(id, packet.macDestination);
 
-                for (Packet sentPacket : maintenanceBuffer.get(packet.macDestination)) {
+                for (NetworkLayerPacket sentPacket : maintenanceBuffer.get(packet.macDestination)) {
                     if (sentPacket.ipSource != id) {
                         Set<OptionType> optionTypes = new HashSet<>();
                         optionTypes.add(OptionType.RouteError);
 
-                        Packet routeErrorPacket = new Packet();
+                        NetworkLayerPacket routeErrorPacket = new NetworkLayerPacket();
 
                         routeErrorPacket.sourceCoordinate = coordinate;
                         routeErrorPacket.received = new HashSet<>();
@@ -222,7 +222,7 @@ public class Node implements Runnable {
                         List<String> newRoute = maybeNewRoute.get();
                         newRoute.add(0, id);
 
-                        Packet salvagedPacket = packet.clone();
+                        NetworkLayerPacket salvagedPacket = packet.clone();
 
                         salvagedPacket.sourceCoordinate = coordinate;
                         salvagedPacket.received = new HashSet<>();
@@ -243,7 +243,7 @@ public class Node implements Runnable {
     }
 
     // Process a received packet.
-    private Optional<Packet> receivePacket(Packet packet) {
+    private Optional<NetworkLayerPacket> receivePacket(NetworkLayerPacket packet) {
         if (packet.ipSource == id) {
             return Optional.empty();
         }
@@ -399,7 +399,7 @@ public class Node implements Runnable {
     // Send a new packet with a RouteReply option.
     private void originateRouteReply(String sourceAddress, String destinationAddress, List<String> route,
             int routeRequestIdentification) {
-        Packet routeReplyPacket = new Packet();
+        NetworkLayerPacket routeReplyPacket = new NetworkLayerPacket();
 
         routeReplyPacket.sourceCoordinate = coordinate;
         routeReplyPacket.received = new HashSet<>();
@@ -441,7 +441,7 @@ public class Node implements Runnable {
 
     // Add an entry to our route request table which keeps tracks of all our route
     // requests.
-    private void addRouteRequestEntry(Packet routeRequestPacket) {
+    private void addRouteRequestEntry(NetworkLayerPacket routeRequestPacket) {
         RouteRequestId routeRequestId = new RouteRequestId();
         routeRequestId.routeRequestIdentification = routeRequestPacket.identification;
         routeRequestId.targetAddress = routeRequestPacket.targetAddress;
@@ -511,8 +511,8 @@ public class Node implements Runnable {
     }
 
     // Perform route discovery.
-    private void routeDiscovery(Packet packet, boolean piggyBackRouteRequest) {
-        Packet routeRequestPacket = new Packet();
+    private void routeDiscovery(NetworkLayerPacket packet, boolean piggyBackRouteRequest) {
+        NetworkLayerPacket routeRequestPacket = new NetworkLayerPacket();
 
         routeRequestPacket.sourceCoordinate = coordinate;
         routeRequestPacket.received = new HashSet<>();
@@ -553,7 +553,7 @@ public class Node implements Runnable {
     }
 
     // Check if a given routeRequest is in our route request table.
-    private boolean routeRequestInTable(Packet routeRequestPacket) {
+    private boolean routeRequestInTable(NetworkLayerPacket routeRequestPacket) {
         RouteRequestTableEntry routeRequestTableEntry = routeRequestTable.get(routeRequestPacket.ipSource);
 
         if (routeRequestTableEntry != null) {
@@ -651,7 +651,7 @@ public class Node implements Runnable {
     }
 
     private final class SendBufferEntry {
-        private Packet packet;
+        private NetworkLayerPacket packet;
         private int additionTime;
     }
 

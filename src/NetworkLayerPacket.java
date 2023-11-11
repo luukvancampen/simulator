@@ -3,7 +3,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-public class Packet implements Cloneable {
+public class NetworkLayerPacket implements Cloneable {
     // Network.
     String data;
     double[] sourceCoordinate;
@@ -18,7 +18,7 @@ public class Packet implements Cloneable {
     String ipDestination;
     int timeToLive;
     boolean isPiggyBack;
-    Packet piggyBack;
+    NetworkLayerPacket piggyBack;
 
     // Routing
     Set<OptionType> optionTypes;
@@ -39,11 +39,11 @@ public class Packet implements Cloneable {
     String unreachableAddress;
 
     @Override
-    public Packet clone() {
-        Packet packet;
+    public NetworkLayerPacket clone() {
+        NetworkLayerPacket packet;
 
         try {
-            packet = (Packet) super.clone();
+            packet = (NetworkLayerPacket) super.clone();
         } catch (CloneNotSupportedException e) {
             throw new AssertionError();
         }

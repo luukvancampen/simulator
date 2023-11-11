@@ -4,7 +4,7 @@ import java.util.Optional;
 
 public class Network implements Runnable {
     // transmission range in meters.
-    final LinkedList<Packet> packets = new LinkedList<>();
+    final LinkedList<NetworkLayerPacket> packets = new LinkedList<>();
 
     // TODO deal with broadcast of TD messages, they're for everyone (I think).
 
@@ -23,7 +23,7 @@ public class Network implements Runnable {
 
     // Nodes can call this method to send a packet to the network. It can't fail, so
     // no need to return anything.
-    void send(Packet packet) {
+    void send(NetworkLayerPacket packet) {
         synchronized (this.packets) {
             try {
                 Thread.sleep(10);
@@ -52,9 +52,9 @@ public class Network implements Runnable {
     // Nodes can call this method to receive all packets destined for them. It
     // either returns an Optional<Packet> or
     // nothing.
-    Optional<Packet> receive(Node node) {
+    Optional<NetworkLayerPacket> receive(Node node) {
         synchronized (this.packets) {
-            for (Packet packet : this.packets) {
+            for (NetworkLayerPacket packet : this.packets) {
                 if (packet.piggyBack != null) {
                     if (!packet.piggyBack.received.contains(node) && nodeWithinRange(packet, node)
                             && !Objects.equals(node.id, packet.macSource)) {
@@ -64,7 +64,7 @@ public class Network implements Runnable {
                         packet.piggyBack.received.add(node);
                         // Return a deep copy of the object.
                         // TODO think about this, deep copy really necessary? I think so.
-                        Packet transmittedPacket = packet.piggyBack.clone();
+                        NetworkLayerPacket transmittedPacket = packet.piggyBack.clone();
                         // System.out.println(node.id + " receives " + packet.type.toString() + " from "
                         // + packet.originID);
                         return Optional.of(transmittedPacket);
@@ -80,7 +80,7 @@ public class Network implements Runnable {
                     packet.received.add(node);
                     // Return a deep copy of the object.
                     // TODO think about this, deep copy really necessary? I think so.
-                    Packet transmittedPacket = packet.clone();
+                    NetworkLayerPacket transmittedPacket = packet.clone();
                     // System.out.println(node.id + " receives " + packet.type.toString() + " from "
                     // + packet.originID);
                     return Optional.of(transmittedPacket);
@@ -94,7 +94,7 @@ public class Network implements Runnable {
     // The following method will return true when a node is in range of the origin
     // of a packet.
     // (Nodes each have their own transmission range)
-    boolean nodeWithinRange(Packet packet, Node node) {
+    boolean nodeWithinRange(NetworkLayerPacket packet, Node node) {
         double packetX = packet.sourceCoordinate[0];
         double packetY = packet.sourceCoordinate[1];
 
