@@ -15,10 +15,13 @@ public class Node implements Runnable {
     double range;
     Network network;
 
-    Map<String, List<String>> routeCache;
-    List<Packet> sendBuffer;
-    Map<String, RouteRequestTableEntry> routeRequestTable;
-    int routeRequestIdentificationCounter;
+    // DSR fields.
+    private Map<String, List<RouteCacheEntry>> routeCache;
+    private ArrayDeque<SendBufferEntry> sendBuffer;
+    private Map<String, RouteRequestTableEntry> routeRequestTable;
+    private List<GratituousReplyTableEntry> gratituousReplyTable;
+    // TODO blacklist?
+    private int routeRequestIdentificationCounter;
 
     Node(String id, double[] coordinate, double range, Network network) {
         this.id = id;
@@ -27,8 +30,9 @@ public class Node implements Runnable {
         this.network = network;
 
         routeCache = new HashMap<>();
-        sendBuffer = new ArrayList<>();
+        sendBuffer = new ArrayDeque<>();
         routeRequestTable = new HashMap<>();
+        gratituousReplyTable = new ArrayList<>();
         routeRequestIdentificationCounter = 0;
     }
 
@@ -67,37 +71,41 @@ public class Node implements Runnable {
 
     public void send(String receiver, String data) {
         Packet packet = new Packet();
+
         packet.ipSource = id;
         packet.ipDestination = receiver;
+
         packet.optionTypes = Set.of();
         packet.data = data;
 
         originatePacket(packet, false);
     }
 
-    private void originatePacket(Packet packet, boolean piggyBack) {
+    private void originatePacket(Packet packet, boolean piggyBackRouteRequest) {
         Optional<List<String>> maybeRoute = findRoute(packet.ipDestination);
 
         if (maybeRoute.isPresent()) {
-            List<String> route = maybeRoute.get();
-
-            sendWithSourceRoute(packet, route);
+            List<String> sourceRoute = maybeRoute.get();
+            sendWithSourceRoute(packet, sourceRoute);
         } else {
-            routeDiscovery(packet, piggyBack);
+            routeDiscovery(packet, piggyBackRouteRequest);
         }
     }
 
     private void sendWithSourceRoute(Packet packet, List<String> route) {
-        packet.macSource = id;
-        packet.macDestination = route.get(0);
         packet.sourceCoordinate = coordinate;
         packet.received = new HashSet<>();
 
-        // Add SourceRoute option if route is multi-hop.
-        if (route.size() > 1) {
+        packet.macSource = id;
+
+        if (!route.isEmpty()) {
+            packet.macDestination = route.get(0);
+
             packet.optionTypes = Set.of(OptionType.SourceRoute);
             packet.sourceRoute = route;
-            packet.segmentsLeft = route.size() - 1;
+            packet.segmentsLeft = route.size();
+        } else {
+            packet.macDestination = packet.ipDestination;
         }
 
         // TODO 8.3.0
@@ -106,33 +114,45 @@ public class Node implements Runnable {
     }
 
     private Optional<Packet> receivePacket(Packet packet) {
+        if (packet.ipSource == id) {
+            return Optional.empty();
+        }
+
         if (packet.optionTypes.contains(OptionType.RouteRequest)) {
-            List<String> route = new ArrayList<>();
-            route.add(packet.ipSource);
-            route.addAll(packet.sourceRoute);
-            route.add(id);
-            updateRoutingCache(route);
+            List<String> sourceRoute = new ArrayList<>();
+            sourceRoute.add(packet.ipSource);
+            sourceRoute.addAll(packet.sourceRoute);
+            sourceRoute.add(id);
+            updateRoutingCache(sourceRoute);
 
             if (packet.targetAddress == id) {
-                sendRouteReply(id, packet.ipSource, packet.sourceRoute, packet.routeRequestIdentification);
+                sourceRoute = new ArrayList<>();
+                sourceRoute.addAll(packet.sourceRoute);
+                sourceRoute.add(packet.targetAddress);
+                sendRouteReply(id, packet.ipSource, sourceRoute, packet.identification);
             } else {
-                if (packet.ipSource == id || packet.sourceRoute.contains(id)) {
+                if (packet.sourceRoute.contains(id)) {
                     return Optional.empty();
                 }
 
-                // TODO search route request table 8.2.2
+                // TODO maybe blacklist
 
-                // TODO add entry to route request table 8.2.2
+                if (routeRequestInTable(packet)) {
+                    return Optional.empty();
+                }
+
+                addRouteRequestEntry(packet);
+
+                boolean sentCachedRoute = false;
 
                 Optional<List<String>> maybeCachedRoute = findRoute(packet.targetAddress);
-                boolean sentCachedRoute = false;
 
                 if (maybeCachedRoute.isPresent()) {
                     List<String> cachedRoute = maybeCachedRoute.get();
 
                     boolean containsDuplicate = false;
 
-                    if (!cachedRoute.contains(packet.ipSource)) {
+                    if (cachedRoute.contains(packet.ipSource)) {
                         containsDuplicate = true;
                     }
 
@@ -144,7 +164,7 @@ public class Node implements Runnable {
                     }
 
                     if (!containsDuplicate) {
-                        List<String> sourceRoute = new ArrayList<>();
+                        sourceRoute = new ArrayList<>();
                         sourceRoute.addAll(packet.sourceRoute);
                         sourceRoute.add(id);
                         sourceRoute.addAll(cachedRoute);
@@ -152,7 +172,7 @@ public class Node implements Runnable {
 
                         // TODO 8.2.5
 
-                        sendRouteReply(id, packet.ipSource, sourceRoute, packet.routeRequestIdentification);
+                        sendRouteReply(id, packet.ipSource, sourceRoute, packet.identification);
 
                         sentCachedRoute = true;
 
@@ -161,56 +181,41 @@ public class Node implements Runnable {
                 }
 
                 if (!sentCachedRoute) {
-                    boolean alreadyPresent = false;
+                    sourceRoute = new ArrayList<>();
+                    sourceRoute.addAll(packet.sourceRoute);
+                    sourceRoute.add(id);
 
-                    RouteRequestTableEntry routeRequestTableEntry = routeRequestTable.get(packet.ipSource);
+                    Packet routeRequestPacket = new Packet();
+                    routeRequestPacket.sourceCoordinate = coordinate;
+                    routeRequestPacket.received = new HashSet<>();
 
-                    if (routeRequestTableEntry != null) {
-                        for (RouteRequestId id : routeRequestTableEntry.routeRequests) {
-                            if (id.routeRequestIdentification == packet.routeRequestIdentification
-                                    && id.targetAddress == packet.targetAddress) {
-                                alreadyPresent = true;
-                                break;
-                            }
-                        }
-                    }
+                    routeRequestPacket.macSource = id;
+                    routeRequestPacket.macDestination = "*";
 
-                    if (!alreadyPresent) {
-                        route = new ArrayList<>();
-                        route.addAll(packet.sourceRoute);
-                        route.add(id);
+                    routeRequestPacket.ipSource = packet.ipSource;
+                    routeRequestPacket.ipDestination = "255.255.255.255";
+                    routeRequestPacket.timeToLive = 255;
 
-                        Packet routeRequestPacket = new Packet();
-                        routeRequestPacket.macSource = id;
-                        routeRequestPacket.macDestination = "*";
-                        routeRequestPacket.sourceCoordinate = coordinate;
-                        routeRequestPacket.received = new HashSet<>();
+                    routeRequestPacket.optionTypes = Set.of(OptionType.RouteRequest);
+                    routeRequestPacket.sourceRoute = sourceRoute;
+                    routeRequestPacket.identification = packet.identification;
+                    routeRequestPacket.targetAddress = packet.targetAddress;
 
-                        routeRequestPacket.ipSource = packet.ipSource;
-                        routeRequestPacket.ipDestination = "255.255.255.255";
-                        routeRequestPacket.optionTypes = Set.of(OptionType.RouteRequest);
-
-                        routeRequestPacket.sourceRoute = route;
-                        routeRequestPacket.routeRequestIdentification = packet.routeRequestIdentification;
-                        routeRequestPacket.targetAddress = packet.targetAddress;
-
-                        network.send(routeRequestPacket);
-                    }
+                    network.send(routeRequestPacket);
                 }
             }
         }
 
         if (packet.optionTypes.contains(OptionType.RouteReply)) {
+            List<String> sourceRoute = new ArrayList<>();
+            sourceRoute.add(packet.ipDestination);
+            sourceRoute.addAll(packet.sourceRoute);
 
-            List<String> route = new ArrayList<>();
-            route.add(packet.ipDestination);
-            route.addAll(packet.sourceRoute);
-            route.add(packet.ipSource);
-            updateRoutingCache(route);
+            updateRoutingCache(sourceRoute);
 
             if (packet.ipDestination != id) {
                 sendRouteReply(packet.ipSource, packet.ipDestination, packet.sourceRoute,
-                        packet.routeRequestIdentification);
+                        packet.identification);
             }
         }
 
@@ -231,11 +236,7 @@ public class Node implements Runnable {
 
         if (packet.optionTypes.contains(OptionType.SourceRoute)) {
             List<String> route = new ArrayList<>();
-
-            if (packet.salvage == 0) {
-                route.add(packet.ipSource);
-            }
-
+            route.add(packet.ipSource);
             route.addAll(packet.sourceRoute);
             route.add(packet.ipDestination);
             updateRoutingCache(route);
@@ -243,15 +244,26 @@ public class Node implements Runnable {
             // TODO 8.1.5
             // TODO automatic route shortening
 
-            if (packet.segmentsLeft == 0) {
-                // packet.optionTypes.remove(OptionType.SourceRoute);
-            } else if (packet.segmentsLeft > packet.sourceRoute.size()) {
-                throw new RuntimeException();
-            } else {
+            if (packet.segmentsLeft == 1) {
                 packet.segmentsLeft -= 1;
-                int i = packet.sourceRoute.size() - packet.segmentsLeft - 1;
 
-                if (packet.sourceRoute.get(i) != "*" && packet.ipDestination != "255.255.255.255") {
+                if (packet.ipDestination != "255.255.255.255") {
+                    packet.timeToLive -= 1;
+
+                    // TODO 8.3
+
+                    packet.macSource = id;
+                    packet.macDestination = packet.ipDestination;
+                    packet.sourceCoordinate = coordinate;
+                    packet.received = new HashSet<>();
+
+                    network.send(packet);
+                }
+            } else if (packet.segmentsLeft > 1) {
+                packet.segmentsLeft -= 1;
+                int i = packet.sourceRoute.size() - packet.segmentsLeft;
+
+                if (packet.sourceRoute.get(i) != "255.255.255.255" && packet.ipDestination != "255.255.255.255") {
                     packet.timeToLive -= 1;
 
                     // TODO 8.3
@@ -277,29 +289,49 @@ public class Node implements Runnable {
 
     private void sendRouteReply(String sourceAddress, String destinationAddress, List<String> sourceRoute,
             int routeRequestIdentification) {
-
         Packet routeReplyPacket = new Packet();
-        routeReplyPacket.macSource = id;
-
-        if (sourceRoute.isEmpty()) {
-            routeReplyPacket.macDestination = destinationAddress;
-        } else {
-            routeReplyPacket.macDestination = sourceRoute.get(sourceRoute.size() - 1);
-        }
 
         routeReplyPacket.sourceCoordinate = coordinate;
         routeReplyPacket.received = new HashSet<>();
 
+        routeReplyPacket.macSource = id;
+
+        if (sourceRoute.size() >= 2) {
+            routeReplyPacket.macDestination = sourceRoute.get(sourceRoute.size() - 2);
+        } else {
+            routeReplyPacket.macDestination = destinationAddress;
+        }
+
         routeReplyPacket.ipSource = sourceAddress;
         routeReplyPacket.ipDestination = destinationAddress;
-        routeReplyPacket.optionTypes = Set.of(OptionType.RouteReply);
+        routeReplyPacket.timeToLive = 255;
 
+        routeReplyPacket.optionTypes = Set.of(OptionType.RouteReply);
         routeReplyPacket.sourceRoute = sourceRoute;
-        routeReplyPacket.routeRequestIdentification = routeRequestIdentification;
+        routeReplyPacket.identification = routeRequestIdentification;
 
         // TODO sleep between 0 and BroadcastJitter. 8.2.4
 
         originatePacket(routeReplyPacket, true);
+    }
+
+    private void addRouteRequestEntry(Packet routeRequestPacket) {
+        RouteRequestId routeRequestId = new RouteRequestId();
+        routeRequestId.routeRequestIdentification = routeRequestPacket.identification;
+        routeRequestId.targetAddress = routeRequestPacket.targetAddress;
+
+        RouteRequestTableEntry routeRequestTableEntry = routeRequestTable.getOrDefault(id,
+                new RouteRequestTableEntry());
+
+        if (routeRequestTableEntry.routeRequests == null) {
+            routeRequestTableEntry.consecutiveRequests = 0;
+            routeRequestTableEntry.timeRemainingUntilNextRequest = 0;
+            routeRequestTableEntry.routeRequests = new ArrayDeque<>();
+        }
+
+        routeRequestTableEntry.timeToLive = routeRequestPacket.timeToLive;
+        routeRequestTableEntry.consecutiveRequests += 1;
+        routeRequestTableEntry.routeRequests.add(routeRequestId);
     }
 
     private void updateRoutingCache(List<String> route) {
@@ -307,95 +339,89 @@ public class Node implements Runnable {
 
         for (int i = 1; i < route.size(); i++) {
             String destinationAddress = route.get(i);
-            List<String> neighbours = routeCache.getOrDefault(sourceAddress, new ArrayList<>());
+            List<RouteCacheEntry> neighbours = routeCache.getOrDefault(sourceAddress, new ArrayList<>());
 
-            if (!neighbours.contains(destinationAddress)) {
-                neighbours.add(destinationAddress);
+            for (int j = 0; j < neighbours.size(); j++) {
+                if (neighbours.get(j).destinationAddress == destinationAddress) {
+                    neighbours.remove(j);
+                }
             }
+
+            RouteCacheEntry routeCacheEntry = new RouteCacheEntry();
+            routeCacheEntry.destinationAddress = destinationAddress;
+            neighbours.add(routeCacheEntry);
 
             routeCache.put(sourceAddress, neighbours);
 
             sourceAddress = destinationAddress;
         }
 
-        System.out.println(id + " :: " + route);
         System.out.println(id + " :: " + routeCache);
 
         checkSendBuffer();
     }
 
     private void checkSendBuffer() {
-        for (int i = 0; i < sendBuffer.size(); i++) {
-            Packet packet = sendBuffer.get(i);
-
-            Optional<List<String>> maybeRoute = findRoute(packet.ipDestination);
+        for (SendBufferEntry sendBufferEntry : sendBuffer) {
+            Optional<List<String>> maybeRoute = findRoute(sendBufferEntry.packet.ipDestination);
 
             if (maybeRoute.isPresent()) {
-                List<String> route = maybeRoute.get();
+                List<String> sourceRoute = maybeRoute.get();
+                sendWithSourceRoute(sendBufferEntry.packet, sourceRoute);
 
-                sendWithSourceRoute(packet, route);
-
-                sendBuffer.remove(i);
+                sendBuffer.remove(sendBufferEntry);
             }
         }
     }
 
-    private void routeDiscovery(Packet packet, boolean piggyBack) {
-        RouteRequestId routeRequestId = new RouteRequestId();
-        routeRequestId.routeRequestIdentification = packet.routeRequestIdentification;
-        routeRequestId.targetAddress = packet.targetAddress;
+    private void routeDiscovery(Packet packet, boolean piggyBackRouteRequest) {
+        Packet routeRequestPacket = new Packet();
 
-        RouteRequestTableEntry routeRequestTableEntry = routeRequestTable.getOrDefault(id,
-                new RouteRequestTableEntry());
+        routeRequestPacket.sourceCoordinate = coordinate;
+        routeRequestPacket.received = new HashSet<>();
 
-        if (routeRequestTableEntry.routeRequests == null) {
-            routeRequestTableEntry.routeRequests = new ArrayDeque<>();
-        }
+        routeRequestPacket.macSource = id;
+        routeRequestPacket.macDestination = "*";
 
-        routeRequestTableEntry.routeRequests.add(routeRequestId);
+        routeRequestPacket.ipSource = id;
+        routeRequestPacket.ipDestination = "255.255.255.255";
+        routeRequestPacket.timeToLive = 255;
 
-        if (!piggyBack) {
-            sendBuffer.add(packet);
+        routeRequestPacket.optionTypes = Set.of(OptionType.RouteRequest);
+        routeRequestPacket.sourceRoute = new ArrayList<>();
+        routeRequestPacket.identification = routeRequestIdentificationCounter;
+        routeRequestPacket.targetAddress = packet.ipDestination;
 
-            Packet routeRequestPacket = new Packet();
-            routeRequestPacket.macSource = id;
-            routeRequestPacket.macDestination = "*";
-            routeRequestPacket.sourceCoordinate = coordinate;
-            routeRequestPacket.received = new HashSet<>();
+        routeRequestIdentificationCounter = (routeRequestIdentificationCounter + 1) % Integer.MAX_VALUE;
 
-            routeRequestPacket.ipSource = id;
-            routeRequestPacket.ipDestination = "255.255.255.255";
-            routeRequestPacket.optionTypes = Set.of(OptionType.RouteRequest);
+        addRouteRequestEntry(routeRequestPacket);
 
-            routeRequestPacket.sourceRoute = new ArrayList<>();
-            routeRequestPacket.routeRequestIdentification = routeRequestIdentificationCounter;
-            routeRequestPacket.targetAddress = packet.ipDestination;
+        // TODO rate limit route requests
 
-            routeRequestIdentificationCounter = (routeRequestIdentificationCounter + 1) % Integer.MAX_VALUE;
-
-            network.send(routeRequestPacket);
-
-            // TODO update route request table (8.2.1)
+        if (!piggyBackRouteRequest) {
+            SendBufferEntry sendBufferEntry = new SendBufferEntry();
+            sendBufferEntry.packet = packet;
+            sendBuffer.add(sendBufferEntry);
         } else {
-            Packet routeRequestPacket = new Packet();
-            routeRequestPacket.macSource = id;
-            routeRequestPacket.macDestination = "*";
-            routeRequestPacket.sourceCoordinate = coordinate;
-            routeRequestPacket.received = new HashSet<>();
-
-            routeRequestPacket.ipSource = id;
-            routeRequestPacket.ipDestination = "255.255.255.255";
             routeRequestPacket.piggyBack = packet;
-            routeRequestPacket.optionTypes = Set.of(OptionType.RouteRequest);
-
-            routeRequestPacket.sourceRoute = new ArrayList<>();
-            routeRequestPacket.routeRequestIdentification = routeRequestIdentificationCounter;
-            routeRequestPacket.targetAddress = packet.ipDestination;
-
-            routeRequestIdentificationCounter = (routeRequestIdentificationCounter + 1) % Integer.MAX_VALUE;
-
-            network.send(routeRequestPacket);
         }
+
+        network.send(routeRequestPacket);
+    }
+
+    private boolean routeRequestInTable(Packet routeRequestPacket) {
+        RouteRequestTableEntry routeRequestTableEntry = routeRequestTable.get(routeRequestPacket.ipSource);
+
+        if (routeRequestTableEntry != null) {
+            for (RouteRequestId id : routeRequestTableEntry.routeRequests) {
+                if (id.routeRequestIdentification == routeRequestPacket.identification
+                        && id.targetAddress == routeRequestPacket.targetAddress) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private Optional<List<String>> findRoute(String destination) {
@@ -433,15 +459,15 @@ public class Node implements Runnable {
 
             queue.remove(index);
 
-            for (String neighbour : routeCache.get(node)) {
-                if (queue.contains(neighbour)) {
+            for (RouteCacheEntry neighbour : routeCache.get(node)) {
+                if (queue.contains(neighbour.destinationAddress)) {
                     int newHops = hops.get(node) + 1;
 
-                    if (newHops < hops.get(neighbour)) {
-                        hops.put(neighbour, newHops);
-                        previous.put(neighbour, node);
+                    if (newHops < hops.get(neighbour.destinationAddress)) {
+                        hops.put(neighbour.destinationAddress, newHops);
+                        previous.put(neighbour.destinationAddress, node);
 
-                        if (neighbour == destination) {
+                        if (neighbour.destinationAddress == destination) {
                             queue.clear();
                         }
                     }
@@ -449,8 +475,9 @@ public class Node implements Runnable {
             }
         }
 
-        String currentNode = destination;
         List<String> route = new ArrayList<>();
+
+        String currentNode = destination;
 
         while (currentNode != id) {
             String prev = previous.get(currentNode);
@@ -459,20 +486,46 @@ public class Node implements Runnable {
                 return Optional.empty();
             }
 
-            route.add(0, currentNode);
             currentNode = prev;
+            route.add(0, currentNode);
         }
+
+        route.remove(0);
 
         return Optional.of(route);
     }
 
+    private final class RouteCacheEntry {
+        private String destinationAddress;
+        private int timeout;
+
+        @Override
+        public String toString() {
+            return destinationAddress;
+        }
+    }
+
+    private final class SendBufferEntry {
+        private Packet packet;
+        private int additionTime;
+    }
+
     private final class RouteRequestTableEntry {
+        private int timeToLive;
+        private int consecutiveRequests;
+        private int timeRemainingUntilNextRequest;
         private Queue<RouteRequestId> routeRequests;
     }
 
     private final class RouteRequestId {
         private int routeRequestIdentification;
         private String targetAddress;
+    }
+
+    private final class GratituousReplyTableEntry {
+        private String targetAddress;
+        private String sourceAddress;
+        private int timeRemaining;
     }
 
     // Set<String> nodes = new HashSet<>();

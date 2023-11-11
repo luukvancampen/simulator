@@ -3,24 +3,27 @@ import java.util.List;
 import java.util.Set;
 
 public class Packet implements Cloneable {
-    // Network / MAC fields.
-    String macSource;
-    String macDestination;
+    // Network.
     String data;
     double[] sourceCoordinate;
     HashSet<Node> received;
 
-    // Routing fields.
-    Set<OptionType> optionTypes;
-    int sequenceNumber;
-    int timeToLive;
-    List<String> sourceRoute;
+    // MAC.
+    String macSource;
+    String macDestination;
+
+    // IP.
     String ipSource;
     String ipDestination;
+    int timeToLive;
     Packet piggyBack;
 
+    // Routing
+    Set<OptionType> optionTypes;
+    List<String> sourceRoute;
+
     // RouteRequest
-    int routeRequestIdentification;
+    int identification;
     String targetAddress;
 
     // SourceRoute
