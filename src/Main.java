@@ -29,6 +29,7 @@ public class Main {
         nodeThread4.start();
         submitTask(n3, "D", "HELLOOO", 0);
         submitTask(n1, "B", "GOODBEY", 300);
+
         while (true) {
             System.out.println(n1.getCurrent_state() + " " + n2.getCurrent_state() + " " + n3.getCurrent_state() + " " + n4.getCurrent_state());
             Thread.sleep(50);
