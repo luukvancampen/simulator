@@ -65,7 +65,6 @@ public class Packet implements Cloneable {
     }
 
     private void printPacket(int indentation) {
-
         System.out.println(macSource + " -> " + macDestination);
 
         printIdentation(indentation);

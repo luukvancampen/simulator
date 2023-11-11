@@ -193,6 +193,7 @@ public class Node implements Runnable {
                 packet.macSource = id;
 
                 packet.timeToLive -= 1;
+
                 packet.route.add(id);
             }
         }
@@ -260,11 +261,9 @@ public class Node implements Runnable {
                     // TODO 8.3
                 }
             }
-
-            System.out.println(id + ": " + packet.sourceRoute);
         }
 
-        if (packet.ipDestination != id) {
+        if (packet.ipDestination != id && !packet.isPiggyBack) {
             packet.sourceCoordinate = coordinate;
             packet.received = new HashSet<>();
 
@@ -347,7 +346,7 @@ public class Node implements Runnable {
             sourceAddress = destinationAddress;
         }
 
-        System.out.println(id + " :: " + routeCache);
+        // System.out.println(id + " :: " + routeCache);
 
         checkSendBuffer();
     }

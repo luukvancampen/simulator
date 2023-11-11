@@ -29,7 +29,7 @@ public class Main {
         nodeThread2.start();
         nodeThread3.start();
         nodeThread4.start();
-        // nodeThread5.start();
+        nodeThread5.start();
 
         submitTask(n1, "D", "HELLOOO", 0);
 
