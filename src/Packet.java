@@ -1,3 +1,4 @@
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -6,7 +7,7 @@ public class Packet implements Cloneable {
     // Network.
     String data;
     double[] sourceCoordinate;
-    HashSet<Node> received;
+    Set<Node> received;
 
     // MAC.
     String macSource;
@@ -16,76 +17,91 @@ public class Packet implements Cloneable {
     String ipSource;
     String ipDestination;
     int timeToLive;
+    boolean isPiggyBack;
     Packet piggyBack;
 
     // Routing
     Set<OptionType> optionTypes;
-    List<String> sourceRoute;
+    List<String> route;
 
     // RouteRequest
     int identification;
     String targetAddress;
 
     // SourceRoute
+    List<String> sourceRoute;
     int segmentsLeft;
     int salvage;
 
     @Override
     public Packet clone() {
+        Packet packet;
+
         try {
-            return (Packet) super.clone();
+            packet = (Packet) super.clone();
         } catch (CloneNotSupportedException e) {
             throw new AssertionError();
         }
+
+        packet.received = new HashSet<>(received);
+
+        if (optionTypes != null) {
+            packet.optionTypes = new HashSet<>(optionTypes);
+        }
+
+        if (route != null) {
+            packet.route = new ArrayList<>(route);
+        }
+
+        if (sourceRoute != null) {
+            packet.sourceRoute = new ArrayList<>(sourceRoute);
+        }
+
+        return packet;
     }
 
-    // PacketType type;
-    // double[] originCoordinate;
-    // String originID;
-    // String destination;
-    // // this HashSet will contain all nodes that have received this particular
-    // packet.
-    // // This is required to make sure that the network does not send a particular
-    // // packet to a node twice.
-    // HashSet<Node> received;
-    // UUID uuid = UUID.randomUUID();
-    // Integer localBackoff;
-    // Integer remoteBackoff;
-    // Integer sequenceNumber;
-    // String data;
+    public void print() {
+        printPacket(2);
+    }
 
-    // @Override
-    // public int hashCode() {
-    // int result = 17;
-    // result = 31 * result + this.uuid.hashCode();
-    // return result;
-    // }
+    private void printPacket(int indentation) {
 
-    // public Packet(PacketType type, double[] originCoordinate, String originID,
-    // String destination, HashSet<Node> received, Integer localBackoff, Integer
-    // remoteBackoff, Integer sequenceNumber, String data) {
-    // this.type = type;
-    // this.originCoordinate = originCoordinate;
-    // this.originID = originID;
-    // this.destination = destination;
-    // this.received = received;
-    // this.localBackoff = localBackoff;
-    // this.remoteBackoff = remoteBackoff;
-    // this.sequenceNumber = sequenceNumber;
-    // this.data = data;
-    // }
+        System.out.println(macSource + " -> " + macDestination);
 
-    // public Packet(PacketType type, double[] originCoordinate, String originID,
-    // String destination, HashSet<Node> received, Integer localBackoff, Integer
-    // remoteBackoff, Integer sequenceNumber) {
-    // this.type = type;
-    // this.originCoordinate = originCoordinate;
-    // this.originID = originID;
-    // this.destination = destination;
-    // this.received = received;
-    // this.localBackoff = localBackoff;
-    // this.remoteBackoff = remoteBackoff;
-    // this.sequenceNumber = sequenceNumber;
-    // }
+        printIdentation(indentation);
+        System.out.println("PL: SCOORD=[" + sourceCoordinate[0] + "," + sourceCoordinate[1] + "]");
 
+        printIdentation(indentation);
+        System.out.println("IP: " + ipSource + " -> " + ipDestination + ", TTL=" + timeToLive + ", DATA=" + data);
+
+        for (OptionType optionType : optionTypes) {
+            if (optionType == OptionType.RouteRequest) {
+                printIdentation(indentation);
+                System.out.println(
+                        "RREQ: ID=" + identification + ", TARGET=" + targetAddress + ", ROUTE=" + route);
+            }
+
+            if (optionType == OptionType.RouteReply) {
+                printIdentation(indentation);
+                System.out.println(
+                        "RREP: ID=" + identification + ", ROUTE=" + route);
+            }
+
+            if (optionType == OptionType.SourceRoute) {
+                printIdentation(indentation);
+                System.out.println(
+                        "SR: SLEF=" + segmentsLeft + ", SALVAGE=" + salvage + ", ROUTE=" + sourceRoute);
+            }
+        }
+
+        if (piggyBack != null) {
+            piggyBack.printPacket(indentation + 2);
+        }
+    }
+
+    private void printIdentation(int identation) {
+        for (int i = 0; i < identation; i++) {
+            System.out.print(" ");
+        }
+    }
 }

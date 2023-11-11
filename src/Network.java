@@ -30,15 +30,20 @@ public class Network implements Runnable {
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
-            System.out.println(packet.macSource + " ---> " + packet.macDestination + ": " + packet.optionTypes + " :: "
-                    + packet.sourceRoute);
 
-            if (packet.piggyBack != null) {
-                System.out.println(
-                        "piggy backed: " + packet.piggyBack.macSource + " ---> " + packet.piggyBack.macDestination
-                                + ": " + packet.piggyBack.optionTypes + " :: "
-                                + packet.piggyBack.sourceRoute);
-            }
+            packet.print();
+
+            // System.out.println(packet.macSource + " ---> " + packet.macDestination + ": "
+            // + packet.optionTypes + " :: "
+            // + packet.sourceRoute);
+
+            // if (packet.piggyBack != null) {
+            // System.out.println(
+            // "piggy backed: " + packet.piggyBack.macSource + " ---> " +
+            // packet.piggyBack.macDestination
+            // + ": " + packet.piggyBack.optionTypes + " :: "
+            // + packet.piggyBack.sourceRoute);
+            // }
 
             this.packets.add(packet);
         }
@@ -51,7 +56,7 @@ public class Network implements Runnable {
         synchronized (this.packets) {
             for (Packet packet : this.packets) {
                 if (packet.piggyBack != null) {
-                    if (!packet.piggyBack.received.contains(node) && nodeWithinRange(packet.piggyBack, node)
+                    if (!packet.piggyBack.received.contains(node) && nodeWithinRange(packet, node)
                             && !Objects.equals(node.id, packet.macSource)) {
                         // Packet destined for node, make sure the node is added to the packets received
                         // list
