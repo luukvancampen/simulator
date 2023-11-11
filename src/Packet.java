@@ -23,6 +23,7 @@ public class Packet implements Cloneable {
     // Routing
     Set<OptionType> optionTypes;
     List<String> route;
+    int salvage;
 
     // RouteRequest
     int identification;
@@ -31,7 +32,11 @@ public class Packet implements Cloneable {
     // SourceRoute
     List<String> sourceRoute;
     int segmentsLeft;
-    int salvage;
+
+    // RouteError
+    String errorSourceAddress;
+    String errorDestinationAddress;
+    String unreachableAddress;
 
     @Override
     public Packet clone() {
@@ -65,7 +70,9 @@ public class Packet implements Cloneable {
     }
 
     private void printPacket(int indentation) {
-        System.out.println(macSource + " -> " + macDestination);
+        if (!isPiggyBack) {
+            System.out.println(macSource + " -> " + macDestination);
+        }
 
         printIdentation(indentation);
         System.out.println("PL: SCOORD=[" + sourceCoordinate[0] + "," + sourceCoordinate[1] + "]");
@@ -86,11 +93,18 @@ public class Packet implements Cloneable {
                         "RREP: ID=" + identification + ", ROUTE=" + route);
             }
 
+            if (optionType == OptionType.RouteError) {
+                printIdentation(indentation);
+                System.out.println(
+                        "RERR");
+            }
+
             if (optionType == OptionType.SourceRoute) {
                 printIdentation(indentation);
                 System.out.println(
                         "SR: SLEF=" + segmentsLeft + ", SALVAGE=" + salvage + ", ROUTE=" + sourceRoute);
             }
+
         }
 
         if (piggyBack != null) {

@@ -7,6 +7,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
+import java.util.function.Consumer;
+import java.util.Iterator;
 
 // Based of of this RFC: https://datatracker.ietf.org/doc/rfc4728/.
 public class Node implements Runnable {
@@ -20,9 +22,9 @@ public class Node implements Runnable {
     private Map<String, List<RouteCacheEntry>> routeCache;
     private ArrayDeque<SendBufferEntry> sendBuffer;
     private Map<String, RouteRequestTableEntry> routeRequestTable;
-    private List<GratituousReplyTableEntry> gratituousReplyTable;
-    // TODO blacklist?
     private int routeRequestIdentificationCounter;
+    private List<GratituousReplyTableEntry> gratituousReplyTable;
+    private Map<String, List<Packet>> maintenanceBuffer;
 
     Node(String id, double[] coordinate, double range, Network network) {
         this.id = id;
@@ -33,8 +35,9 @@ public class Node implements Runnable {
         routeCache = new HashMap<>();
         sendBuffer = new ArrayDeque<>();
         routeRequestTable = new HashMap<>();
-        gratituousReplyTable = new ArrayList<>();
         routeRequestIdentificationCounter = 0;
+        gratituousReplyTable = new ArrayList<>();
+        maintenanceBuffer = new HashMap<>();
     }
 
     @Override
@@ -43,10 +46,12 @@ public class Node implements Runnable {
             try {
                 Thread.sleep(5);
 
-                Optional<Packet> maybePacket = this.receive();
+                Optional<Packet> maybePacket = this.receiveDSR();
 
                 if (maybePacket.isPresent()) {
-                    System.out.println("PACKET RECEIVED");
+                    System.out.println();
+                    System.out.println("### PACKET RECEIVED AT " + id + ": " + maybePacket.get().data);
+                    System.out.println();
                 }
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
@@ -54,8 +59,14 @@ public class Node implements Runnable {
         }
     }
 
-    public Optional<Packet> receive() {
-        Optional<Packet> maybePacket = network.receive(this);
+    /*
+     * 
+     * MAC.
+     * 
+     */
+
+    public Optional<Packet> receiveMACAW() {
+        Optional<Packet> maybePacket = network.receive(this); // TODO replace this with macaw.
 
         if (!maybePacket.isPresent()) {
             return Optional.empty();
@@ -63,14 +74,49 @@ public class Node implements Runnable {
 
         Packet packet = maybePacket.get();
 
-        if (packet.macDestination != id && packet.macDestination != "*") {
+        if (packet.macDestination != id && packet.macDestination != "ff:ff:ff:ff:ff:ff") {
+            return Optional.empty();
+        }
+
+        return Optional.of(packet);
+    }
+
+    public void sendMACAW(Packet packet, Consumer<Boolean> callback) {
+        network.send(packet); // replace this with macaw.
+
+        // TODO route through macaw here.
+        // Call the callback with `true` when successfully received an ack.
+        // Else if we timed out, call the callback with `false`
+
+        callback.accept(true);
+    }
+
+    // Helper function.
+    public void sendMACAW(Packet packet) {
+        sendMACAW(packet, success -> {
+        });
+    }
+
+    /*
+     * 
+     * Routing.
+     * 
+     */
+
+    // Process a packet using DSR.
+    // Returns packets with data in them if any.
+    public Optional<Packet> receiveDSR() {
+        Optional<Packet> maybePacket = receiveMACAW();
+
+        if (!maybePacket.isPresent()) {
             return Optional.empty();
         }
 
         return receivePacket(maybePacket.get());
     }
 
-    public void send(String receiver, String data) {
+    // Send data to a receiver using DSR.
+    public void sendDSR(String receiver, String data) {
         Packet packet = new Packet();
 
         packet.ipSource = id;
@@ -82,9 +128,21 @@ public class Node implements Runnable {
         originatePacket(packet, false);
     }
 
+    // Originate a packet.
+    // This function will broadcast it if the destination address is
+    // 255.255.255.255.
+    // Else, if a SourceRoute option in included in the packet, it will forward it
+    // over that route.
+    // Else, we try to find a route in our routeCache.
+    // If the route is in the cache, include a SourceRoute option and send to over
+    // that route.
+    // Else if we know no route, store the packet in the sendBuffer and perform
+    // route discovery.
     private void originatePacket(Packet packet, boolean piggyBackRouteRequest) {
-        if (packet.ipDestination == "255.255.255.255" || packet.optionTypes.contains(OptionType.SourceRoute)) {
-            network.send(packet);
+        if (packet.ipDestination == "255.255.255.255") {
+            sendMACAW(packet);
+        } else if (packet.optionTypes.contains(OptionType.SourceRoute)) {
+            sendWithMaintenance(packet);
         } else {
             Optional<List<String>> maybeRoute = findRoute(packet.ipDestination);
 
@@ -97,6 +155,8 @@ public class Node implements Runnable {
         }
     }
 
+    // Send the packet over the given sourceRoute.
+    // Will include a SourceRoute option.
     private void sendWithSourceRoute(Packet packet, List<String> sourceRoute) {
         packet.sourceCoordinate = coordinate;
         packet.received = new HashSet<>();
@@ -111,17 +171,78 @@ public class Node implements Runnable {
             packet.macDestination = sourceRoute.get(0);
 
             packet.optionTypes = optionTypes;
+            packet.salvage = 0;
             packet.sourceRoute = sourceRoute;
             packet.segmentsLeft = sourceRoute.size();
         } else {
             packet.macDestination = packet.ipDestination;
         }
 
-        // TODO 8.3.0
-
-        network.send(packet);
+        sendWithMaintenance(packet);
     }
 
+    // Send a packet with a SourceRoute option to the next hop.
+    // This function also performs route error handling if it could not reach the
+    // next hop.
+    private void sendWithMaintenance(Packet packet) {
+        List<Packet> packets = maintenanceBuffer.getOrDefault(packet.macDestination, new ArrayList<>());
+        packets.add(packet);
+        maintenanceBuffer.put(packet.macDestination, packets);
+
+        sendMACAW(packet, success -> {
+            if (!success) {
+                handleLinkError(id, packet.macDestination);
+
+                for (Packet sentPacket : maintenanceBuffer.get(packet.macDestination)) {
+                    if (sentPacket.ipSource != id) {
+                        Set<OptionType> optionTypes = new HashSet<>();
+                        optionTypes.add(OptionType.RouteError);
+
+                        Packet routeErrorPacket = new Packet();
+
+                        routeErrorPacket.sourceCoordinate = coordinate;
+                        routeErrorPacket.received = new HashSet<>();
+
+                        routeErrorPacket.ipSource = id;
+                        routeErrorPacket.ipDestination = packet.ipSource;
+                        routeErrorPacket.timeToLive = 255;
+
+                        routeErrorPacket.optionTypes = optionTypes;
+                        routeErrorPacket.salvage = packet.salvage;
+                        routeErrorPacket.errorSourceAddress = id;
+                        routeErrorPacket.errorDestinationAddress = packet.ipSource;
+                        routeErrorPacket.unreachableAddress = packet.macDestination;
+
+                        originatePacket(routeErrorPacket, false);
+                    }
+
+                    Optional<List<String>> maybeNewRoute = findRoute(packet.ipDestination);
+
+                    if (maybeNewRoute.isPresent()) {
+                        List<String> newRoute = maybeNewRoute.get();
+                        newRoute.add(0, id);
+
+                        Packet salvagedPacket = packet.clone();
+
+                        salvagedPacket.sourceCoordinate = coordinate;
+                        salvagedPacket.received = new HashSet<>();
+
+                        salvagedPacket.ipSource = id;
+
+                        salvagedPacket.sourceRoute = newRoute;
+                        salvagedPacket.segmentsLeft = newRoute.size();
+                        salvagedPacket.salvage = packet.salvage + 1;
+
+                        originatePacket(salvagedPacket, false);
+                    }
+                }
+            }
+
+            maintenanceBuffer.get(packet.macDestination).clear();
+        });
+    }
+
+    // Process a received packet.
     private Optional<Packet> receivePacket(Packet packet) {
         if (packet.ipSource == id) {
             return Optional.empty();
@@ -142,7 +263,6 @@ public class Node implements Runnable {
 
                 return Optional.empty();
             } else {
-
                 if (packet.route.contains(id)) {
                     return Optional.empty();
                 }
@@ -206,7 +326,7 @@ public class Node implements Runnable {
         }
 
         if (packet.optionTypes.contains(OptionType.RouteError)) {
-            // TODO 8.3.5
+            handleLinkError(packet.errorSourceAddress, packet.unreachableAddress);
         }
 
         if (packet.optionTypes.contains(OptionType.AcknowledgementRequest)) {
@@ -222,12 +342,15 @@ public class Node implements Runnable {
 
         if (packet.optionTypes.contains(OptionType.SourceRoute)) {
             List<String> route = new ArrayList<>();
-            route.add(packet.ipSource);
+
+            if (packet.salvage == 0) {
+                route.add(packet.ipSource);
+            }
+
             route.addAll(packet.sourceRoute);
             route.add(packet.ipDestination);
             updateRoutingCache(route);
 
-            // TODO 8.1.5
             // TODO automatic route shortening
 
             if (packet.segmentsLeft == 1) {
@@ -241,8 +364,6 @@ public class Node implements Runnable {
                     packet.timeToLive -= 1;
 
                     packet.segmentsLeft -= 1;
-
-                    // TODO 8.3
                 }
             } else if (packet.segmentsLeft > 1) {
                 int i = packet.sourceRoute.size() - packet.segmentsLeft + 1;
@@ -257,8 +378,6 @@ public class Node implements Runnable {
                     packet.timeToLive -= 1;
 
                     packet.segmentsLeft -= 1;
-
-                    // TODO 8.3
                 }
             }
         }
@@ -277,6 +396,7 @@ public class Node implements Runnable {
         return Optional.empty();
     }
 
+    // Send a new packet with a RouteReply option.
     private void originateRouteReply(String sourceAddress, String destinationAddress, List<String> route,
             int routeRequestIdentification) {
         Packet routeReplyPacket = new Packet();
@@ -305,6 +425,22 @@ public class Node implements Runnable {
         originatePacket(routeReplyPacket, true);
     }
 
+    // Update our cache by removing a link.
+    private void handleLinkError(String sourceAddress, String destinationAddress) {
+        List<RouteCacheEntry> entries = routeCache.getOrDefault(sourceAddress, new ArrayList<>());
+        Iterator<RouteCacheEntry> iter = entries.iterator();
+
+        while (iter.hasNext()) {
+            RouteCacheEntry entry = iter.next();
+
+            if (entry.destinationAddress == destinationAddress) {
+                iter.remove();
+            }
+        }
+    }
+
+    // Add an entry to our route request table which keeps tracks of all our route
+    // requests.
     private void addRouteRequestEntry(Packet routeRequestPacket) {
         RouteRequestId routeRequestId = new RouteRequestId();
         routeRequestId.routeRequestIdentification = routeRequestPacket.identification;
@@ -324,16 +460,20 @@ public class Node implements Runnable {
         routeRequestTableEntry.routeRequests.add(routeRequestId);
     }
 
+    // Update our routing cache with the given new route.
     private void updateRoutingCache(List<String> route) {
         String sourceAddress = route.get(0);
 
         for (int i = 1; i < route.size(); i++) {
             String destinationAddress = route.get(i);
             List<RouteCacheEntry> neighbours = routeCache.getOrDefault(sourceAddress, new ArrayList<>());
+            Iterator<RouteCacheEntry> iter = neighbours.iterator();
 
-            for (int j = 0; j < neighbours.size(); j++) {
-                if (neighbours.get(j).destinationAddress == destinationAddress) {
-                    neighbours.remove(j);
+            while (iter.hasNext()) {
+                RouteCacheEntry entry = iter.next();
+
+                if (entry.destinationAddress == destinationAddress) {
+                    iter.remove();
                 }
             }
 
@@ -351,19 +491,26 @@ public class Node implements Runnable {
         checkSendBuffer();
     }
 
+    // Check our send buffer if we now have routes to these nodes after updating our
+    // cache.
     private void checkSendBuffer() {
-        for (SendBufferEntry sendBufferEntry : sendBuffer) {
-            Optional<List<String>> maybeRoute = findRoute(sendBufferEntry.packet.ipDestination);
+        Iterator<SendBufferEntry> iter = sendBuffer.iterator();
+
+        while (iter.hasNext()) {
+            SendBufferEntry entry = iter.next();
+
+            Optional<List<String>> maybeRoute = findRoute(entry.packet.ipDestination);
 
             if (maybeRoute.isPresent()) {
                 List<String> sourceRoute = maybeRoute.get();
-                sendWithSourceRoute(sendBufferEntry.packet, sourceRoute);
+                sendWithSourceRoute(entry.packet, sourceRoute);
 
-                sendBuffer.remove(sendBufferEntry);
+                iter.remove();
             }
         }
     }
 
+    // Perform route discovery.
     private void routeDiscovery(Packet packet, boolean piggyBackRouteRequest) {
         Packet routeRequestPacket = new Packet();
 
@@ -371,7 +518,7 @@ public class Node implements Runnable {
         routeRequestPacket.received = new HashSet<>();
 
         routeRequestPacket.macSource = id;
-        routeRequestPacket.macDestination = "*";
+        routeRequestPacket.macDestination = "ff:ff:ff:ff:ff:ff";
 
         routeRequestPacket.ipSource = id;
         routeRequestPacket.ipDestination = "255.255.255.255";
@@ -401,9 +548,11 @@ public class Node implements Runnable {
             routeRequestPacket.piggyBack = packet;
         }
 
-        network.send(routeRequestPacket);
+        sendMACAW(routeRequestPacket, succcess -> {
+        });
     }
 
+    // Check if a given routeRequest is in our route request table.
     private boolean routeRequestInTable(Packet routeRequestPacket) {
         RouteRequestTableEntry routeRequestTableEntry = routeRequestTable.get(routeRequestPacket.ipSource);
 
@@ -419,6 +568,7 @@ public class Node implements Runnable {
         return false;
     }
 
+    // Find a route from this node to the given destination.
     private Optional<List<String>> findRoute(String destination) {
         Map<String, Integer> hops = new HashMap<>();
         Map<String, String> previous = new HashMap<>();
