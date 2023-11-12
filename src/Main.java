@@ -28,9 +28,7 @@ public class Main {
         nodeThread3.start();
         nodeThread4.start();
 
-        send(n1, "B", "HELLOOO", 0);
-        // move(n1, 4, 2, 1000);
-        send(n1, "B", "HELLOOO", 2000);
+        send(n1, "D", "HELLOOO", 0);
 
         while (true) {
             Thread.sleep(50);

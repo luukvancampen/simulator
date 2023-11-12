@@ -23,7 +23,7 @@ public class Node implements Runnable {
     private ArrayDeque<SendBufferEntry> sendBuffer;
     private Map<String, RouteRequestTableEntry> routeRequestTable;
     private int routeRequestIdentificationCounter;
-    private List<GratituousReplyTableEntry> gratituousReplyTable;
+    private List<GratituousReplyTableEntry> gratuitousReplyTable;
     private Map<String, List<NetworkLayerPacket>> maintenanceBuffer;
 
     Node(String id, double[] coordinate, double range, Network network) {
@@ -36,7 +36,7 @@ public class Node implements Runnable {
         sendBuffer = new ArrayDeque<>();
         routeRequestTable = new HashMap<>();
         routeRequestIdentificationCounter = 0;
-        gratituousReplyTable = new ArrayList<>();
+        gratuitousReplyTable = new ArrayList<>();
         maintenanceBuffer = new HashMap<>();
     }
 
@@ -162,6 +162,8 @@ public class Node implements Runnable {
         packet.received = new HashSet<>();
 
         packet.macSource = id;
+
+        packet.timeToLive = 255;
 
         if (!sourceRoute.isEmpty()) {
             Set<OptionType> optionTypes = new HashSet<>();
@@ -312,8 +314,6 @@ public class Node implements Runnable {
 
                 packet.macSource = id;
 
-                packet.timeToLive -= 1;
-
                 packet.route.add(id);
             }
         }
@@ -361,8 +361,6 @@ public class Node implements Runnable {
                     packet.macSource = id;
                     packet.macDestination = packet.ipDestination;
 
-                    packet.timeToLive -= 1;
-
                     packet.segmentsLeft -= 1;
                 }
             } else if (packet.segmentsLeft > 1) {
@@ -375,16 +373,16 @@ public class Node implements Runnable {
                     packet.macSource = id;
                     packet.macDestination = packet.sourceRoute.get(i);
 
-                    packet.timeToLive -= 1;
-
                     packet.segmentsLeft -= 1;
                 }
             }
         }
 
-        if (packet.ipDestination != id && !packet.isPiggyBack) {
+        if (packet.ipDestination != id && packet.timeToLive > 0 && !packet.isPiggyBack) {
             packet.sourceCoordinate = coordinate;
             packet.received = new HashSet<>();
+
+            packet.timeToLive -= 1;
 
             originatePacket(packet, false);
         } else {
@@ -548,8 +546,7 @@ public class Node implements Runnable {
             routeRequestPacket.piggyBack = packet;
         }
 
-        sendMACAW(routeRequestPacket, succcess -> {
-        });
+        sendMACAW(routeRequestPacket);
     }
 
     // Check if a given routeRequest is in our route request table.
